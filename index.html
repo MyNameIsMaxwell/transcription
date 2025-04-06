@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Загрузка аудио и получение резюме</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 600px; margin: auto; }
+        .progress { width: 100%; background: #eee; margin-top: 10px; display: none; }
+        .progress-bar { width: 0%; height: 20px; background: #76c7c0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Загрузите аудиофайл для получения резюме</h1>
+        <form id="uploadForm" enctype="multipart/form-data">
+            <label for="audioFile">Выберите аудиофайл:</label><br>
+            <input type="file" id="audioFile" name="file" accept="audio/*" required><br><br>
+            <label for="prompt">Промпт (необязательно):</label><br>
+            <textarea id="prompt" name="prompt" rows="3" cols="50" placeholder="Например: Создай краткое содержание в виде списка ключевых тезисов..."></textarea><br><br>
+            <button type="submit">Загрузить и обработать</button>
+        </form>
+
+        <div class="progress" id="progressContainer">
+            <div class="progress-bar" id="progressBar"></div>
+        </div>
+
+        <div id="message" style="margin-top:20px;"></div>
+
+        <h2>История загрузок</h2>
+        <div id="history"></div>
+    </div>
+
+    <script>
+        const uploadForm = document.getElementById('uploadForm');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressBar = document.getElementById('progressBar');
+        const messageDiv = document.getElementById('message');
+        const historyDiv = document.getElementById('history');
+
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(uploadForm);
+
+            progressContainer.style.display = "block";
+            progressBar.style.width = "0%";
+            messageDiv.innerText = "Загрузка файла...";
+
+            const response = await fetch('/upload/', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+            messageDiv.innerText = result.message;
+            progressBar.style.width = "100%";
+
+            // Обновляем историю загрузок через несколько секунд, чтобы дать время на обработку
+            setTimeout(fetchHistory, 5000);
+        });
+
+        async function fetchHistory() {
+            const response = await fetch('/history');
+            const data = await response.json();
+            if (data.history && data.history.length > 0) {
+                let html = "<ul>";
+                data.history.forEach(file => {
+                    // Формируем ссылку для скачивания; предполагается, что идентификатор файла содержится в начале имени
+                    const downloadUrl = `/download/${file.split('_')[0]}/${file}`;
+                    html += `<li><a href="${downloadUrl}" target="_blank">${file}</a></li>`;
+                });
+                html += "</ul>";
+                historyDiv.innerHTML = html;
+            } else {
+                historyDiv.innerHTML = "История пуста.";
+            }
+        }
+
+        // Загрузка истории при старте страницы
+        fetchHistory();
+    </script>
+</body>
+</html>
