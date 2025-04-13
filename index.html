@@ -3,12 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Загрузка аудио и получение резюме</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        .container { max-width: 600px; margin: auto; }
-        .progress { width: 100%; background: #eee; margin-top: 10px; display: none; }
-        .progress-bar { width: 0%; height: 20px; background: #76c7c0; }
-    </style>
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <div class="container">
@@ -58,14 +53,16 @@
             setTimeout(fetchHistory, 5000);
         });
 
+        // Функция для получения истории файлов
         async function fetchHistory() {
             const response = await fetch('/history');
             const data = await response.json();
             if (data.history && data.history.length > 0) {
                 let html = "<ul>";
+                // Если вы передаете также user_id, то можно использовать его:
+                const userId = data.user_id || ""; // или задать значение из сессии/шаблона
                 data.history.forEach(file => {
-                    // Формируем ссылку для скачивания; предполагается, что идентификатор файла содержится в начале имени
-                    const downloadUrl = `/download/${file.split('_')[0]}/${file}`;
+                    const downloadUrl = `/download/${userId}/${file}`;
                     html += `<li><a href="${downloadUrl}" target="_blank">${file}</a></li>`;
                 });
                 html += "</ul>";
@@ -75,7 +72,7 @@
             }
         }
 
-        // Загрузка истории при старте страницы
+        // Загружаем историю при старте страницы
         fetchHistory();
     </script>
 </body>

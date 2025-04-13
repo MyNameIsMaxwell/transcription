@@ -7,37 +7,40 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from pydub import AudioSegment
 import openai
+from openai import OpenAI
+
+from dotenv import load_dotenv
 from docx import Document
 
-# Укажите ваш OpenAI API ключ (его можно задать через переменную окружения)
-openai.api_key = os.getenv("OPENAI_API_KEY")
+load_dotenv()
+client = OpenAI(api_key=os.getenv("DEEPSEEK_KEY"), base_url="https://api.deepseek.com")
 
 app = FastAPI()
-# Используем middleware для управления сессиями
+# РСЃРїРѕР»СЊР·СѓРµРј middleware РґР»СЏ СѓРїСЂР°РІР»РµРЅРёСЏ СЃРµСЃСЃРёСЏРјРё
 app.add_middleware(SessionMiddleware, secret_key="!secret")
 
-# Определяем директории для хранения загруженных файлов и результатов
+# РћРїСЂРµРґРµР»СЏРµРј РґРёСЂРµРєС‚РѕСЂРёРё РґР»СЏ С…СЂР°РЅРµРЅРёСЏ Р·Р°РіСЂСѓР¶РµРЅРЅС‹С… С„Р°Р№Р»РѕРІ Рё СЂРµР·СѓР»СЊС‚Р°С‚РѕРІ
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 RESULT_DIR = os.path.join(BASE_DIR, "results")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULT_DIR, exist_ok=True)
 
-# Маршрут для главной страницы (фронтенд)
+# РњР°СЂС€СЂСѓС‚ РґР»СЏ РіР»Р°РІРЅРѕР№ СЃС‚СЂР°РЅРёС†С‹ (С„СЂРѕРЅС‚РµРЅРґ)
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    # Если в сессии отсутствует user_id, генерируем новый
+    # Р•СЃР»Рё РІ СЃРµСЃСЃРёРё РѕС‚СЃСѓС‚СЃС‚РІСѓРµС‚ user_id, РіРµРЅРµСЂРёСЂСѓРµРј РЅРѕРІС‹Р№
     user_id = request.session.get("user_id")
     if not user_id:
         user_id = str(uuid.uuid4())
         request.session["user_id"] = user_id
-    # Читаем файл index.html (находится в той же папке)
+    # Р§РёС‚Р°РµРј С„Р°Р№Р» index.html (РЅР°С…РѕРґРёС‚СЃСЏ РІ С‚РѕР№ Р¶Рµ РїР°РїРєРµ)
     index_path = os.path.join(BASE_DIR, "index.html")
     with open(index_path, "r", encoding="utf-8") as f:
         html_content = f.read()
     return HTMLResponse(content=html_content)
 
-# Эндпоинт загрузки аудиофайла. Можно передать дополнительный параметр "prompt"
+# Р­РЅРґРїРѕРёРЅС‚ Р·Р°РіСЂСѓР·РєРё Р°СѓРґРёРѕС„Р°Р№Р»Р°. РњРѕР¶РЅРѕ РїРµСЂРµРґР°С‚СЊ РґРѕРїРѕР»РЅРёС‚РµР»СЊРЅС‹Р№ РїР°СЂР°РјРµС‚СЂ "prompt"
 @app.post("/upload/")
 async def upload_audio(
     request: Request,
@@ -50,7 +53,7 @@ async def upload_audio(
         user_id = str(uuid.uuid4())
         request.session["user_id"] = user_id
 
-    # Сохраняем загруженный файл на сервер
+    # РЎРѕС…СЂР°РЅСЏРµРј Р·Р°РіСЂСѓР¶РµРЅРЅС‹Р№ С„Р°Р№Р» РЅР° СЃРµСЂРІРµСЂ
     file_id = str(uuid.uuid4())
     filename = f"{file_id}_{file.filename}"
     file_path = os.path.join(UPLOAD_DIR, filename)
@@ -58,50 +61,55 @@ async def upload_audio(
         content = await file.read()
         f_out.write(content)
 
-    # Если пользователь не задал промпт, используем значение по умолчанию
+    # Р•СЃР»Рё РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ Р·Р°РґР°Р» РїСЂРѕРјРїС‚, РёСЃРїРѕР»СЊР·СѓРµРј Р·РЅР°С‡РµРЅРёРµ РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ
     if not prompt:
-        prompt = "Создай краткое содержание в виде списка ключевых тезисов на основе следующего текста:"
+        prompt = "РЎРѕР·РґР°Р№ РєСЂР°С‚РєРѕРµ СЃРѕРґРµСЂР¶Р°РЅРёРµ РІ РІРёРґРµ СЃРїРёСЃРєР° РєР»СЋС‡РµРІС‹С… С‚РµР·РёСЃРѕРІ РЅР° РѕСЃРЅРѕРІРµ С‚РµРєСЃС‚Р° РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ"
 
-    # Запускаем фоновую задачу для обработки аудио
+    # Р—Р°РїСѓСЃРєР°РµРј С„РѕРЅРѕРІСѓСЋ Р·Р°РґР°С‡Сѓ РґР»СЏ РѕР±СЂР°Р±РѕС‚РєРё Р°СѓРґРёРѕ
     background_tasks.add_task(process_audio, file_path, file_id, user_id, prompt)
 
-    return JSONResponse({"message": "Файл загружен, обработка запущена", "file_id": file_id})
+    return JSONResponse({"message": "Р¤Р°Р№Р» Р·Р°РіСЂСѓР¶РµРЅ, РѕР±СЂР°Р±РѕС‚РєР° Р·Р°РїСѓС‰РµРЅР°", "file_id": file_id})
 
 def process_audio(file_path: str, file_id: str, user_id: str, prompt: str):
     try:
-        # 1. Разбивка аудио на части, если длительность больше 15 минут
+        # 1. Р Р°Р·Р±РёРІРєР° Р°СѓРґРёРѕ РЅР° С‡Р°СЃС‚Рё, РµСЃР»Рё РґР»РёС‚РµР»СЊРЅРѕСЃС‚СЊ Р±РѕР»СЊС€Рµ 10 РјРёРЅСѓС‚
         parts = split_audio(file_path)
         transcripts = []
         for part in parts:
             transcript = transcribe_with_whisper(part)
             transcripts.append(transcript)
-            # Если файл является временным (от разбиения), удаляем его после транскрипции
+            # Р•СЃР»Рё С„Р°Р№Р» СЏРІР»СЏРµС‚СЃСЏ РІСЂРµРјРµРЅРЅС‹Рј (РѕС‚ СЂР°Р·Р±РёРµРЅРёСЏ), СѓРґР°Р»СЏРµРј РµРіРѕ РїРѕСЃР»Рµ С‚СЂР°РЅСЃРєСЂРёРїС†РёРё
             if part != file_path:
                 os.remove(part)
         full_text = " ".join(transcripts)
 
-        # 2. Генерация резюме через ChatGPT API
+        # 2. Р“РµРЅРµСЂР°С†РёСЏ СЂРµР·СЋРјРµ С‡РµСЂРµР· ChatGPT API
         summary = generate_summary(full_text, prompt)
 
-        # 3. Создание итогового Word?файла (.docx)
+        # 3. РЎРѕР·РґР°РЅРёРµ РёС‚РѕРіРѕРІРѕРіРѕ Word?С„Р°Р№Р»Р° (.docx)
+
         result_filename = create_docx(summary, file_id)
 
-        # 4. Сохранение результата в истории пользователя (директория RESULT_DIR/user_id)
+        # 4. РЎРѕС…СЂР°РЅРµРЅРёРµ СЂРµР·СѓР»СЊС‚Р°С‚Р° РІ РёСЃС‚РѕСЂРёРё РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ (РґРёСЂРµРєС‚РѕСЂРёСЏ RESULT_DIR/user_id)
         user_dir = os.path.join(RESULT_DIR, user_id)
         os.makedirs(user_dir, exist_ok=True)
         final_path = os.path.join(user_dir, result_filename)
         shutil.move(result_filename, final_path)
+
+        # 5. РЈРґР°Р»СЏРµРј РёСЃС…РѕРґРЅС‹Р№ Р°СѓРґРёРѕС„Р°Р№Р», РµСЃР»Рё РѕРЅ СЃСѓС‰РµСЃС‚РІСѓРµС‚
+        if os.path.exists(file_path):
+            os.remove(file_path)
     except Exception as e:
         print(f"Error processing file {file_id}: {str(e)}")
 
 def split_audio(file_path: str):
     """
-    Разбивает аудиофайл на части, если его длительность превышает 15 минут.
-    Возвращает список путей к файлам (если длительность меньше – возвращает исходный файл).
+    Р Р°Р·Р±РёРІР°РµС‚ Р°СѓРґРёРѕС„Р°Р№Р» РЅР° С‡Р°СЃС‚Рё, РµСЃР»Рё РµРіРѕ РґР»РёС‚РµР»СЊРЅРѕСЃС‚СЊ РїСЂРµРІС‹С€Р°РµС‚ 15 РјРёРЅСѓС‚.
+    Р’РѕР·РІСЂР°С‰Р°РµС‚ СЃРїРёСЃРѕРє РїСѓС‚РµР№ Рє С„Р°Р№Р»Р°Рј (РµСЃР»Рё РґР»РёС‚РµР»СЊРЅРѕСЃС‚СЊ РјРµРЅСЊС€Рµ вЂ“ РІРѕР·РІСЂР°С‰Р°РµС‚ РёСЃС…РѕРґРЅС‹Р№ С„Р°Р№Р»).
     """
     audio = AudioSegment.from_file(file_path)
     duration_ms = len(audio)
-    max_duration = 15 * 60 * 1000  # 15 минут в миллисекундах
+    max_duration = 10 * 60 * 1000  # 10 РјРёРЅСѓС‚ РІ РјРёР»Р»РёСЃРµРєСѓРЅРґР°С…
 
     if duration_ms <= max_duration:
         return [file_path]
@@ -114,63 +122,63 @@ def split_audio(file_path: str):
         end_ms = min((i + 1) * max_duration, duration_ms)
         chunk = audio[start_ms:end_ms]
         part_filename = f"{base}_part{i+1}{ext}"
-        # Экспортируем часть; формат определяется по расширению (без точки)
+        # Р­РєСЃРїРѕСЂС‚РёСЂСѓРµРј С‡Р°СЃС‚СЊ; С„РѕСЂРјР°С‚ РѕРїСЂРµРґРµР»СЏРµС‚СЃСЏ РїРѕ СЂР°СЃС€РёСЂРµРЅРёСЋ (Р±РµР· С‚РѕС‡РєРё)
         chunk.export(part_filename, format=ext[1:])
         parts.append(part_filename)
     return parts
 
-def transcribe_with_whisper(audio_path: str):
+
+def transcribe_with_whisper(audio_path: str) -> str:
     """
-    Выполняет транскрипцию аудио через Whisper API.
-    Для реальной интеграции используется openai.Audio.transcribe (при наличии поддержки).
+    Р’С‹РїРѕР»РЅСЏРµС‚ С‚СЂР°РЅСЃРєСЂРёРїС†РёСЋ Р°СѓРґРёРѕ С‡РµСЂРµР· Whisper API,
+    РёСЃРїРѕР»СЊР·СѓСЏ РѕС‚РґРµР»СЊРЅС‹Р№ APIвЂ‘РєР»СЋС‡ Рё Р±Р°Р·РѕРІС‹Р№ URL РґР»СЏ Whisper.
     """
     try:
+        whisper_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url="https://api.openai.com/v1")
+
         with open(audio_path, "rb") as audio_file:
-            transcript = openai.Audio.transcribe("whisper-1", audio_file)
-        # Если возвращается словарь с ключом "text"
-        if isinstance(transcript, dict) and "text" in transcript:
-            return transcript["text"]
-        elif isinstance(transcript, str):
-            return transcript
-        else:
-            return ""
+            response = whisper_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="text"
+            )
+
+        return response
     except Exception as e:
         print(f"Error transcribing {audio_path}: {str(e)}")
         return ""
 
-def generate_summary(text: str, prompt: str):
+def generate_summary(text: str, prompt: str) -> str:
     """
-    Генерирует резюме, отправляя полный текст в ChatGPT API с указанным системным промптом.
+    Р“РµРЅРµСЂРёСЂСѓРµС‚ СЂРµР·СЋРјРµ, РѕС‚РїСЂР°РІР»СЏСЏ РїРѕР»РЅС‹Р№ С‚РµРєСЃС‚ РІ DeepSeek API СЃ СѓРєР°Р·Р°РЅРЅС‹Рј СЃРёСЃС‚РµРјРЅС‹Рј РїСЂРѕРјРїС‚РѕРј.
     """
     try:
         messages = [
             {"role": "system", "content": prompt},
             {"role": "user", "content": text}
         ]
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            temperature=0.5,
-            max_tokens=800
-        )
-        summary = response.choices[0].message['content']
-        return summary
+        response = client.chat.completions.create(model="deepseek-chat",  # РјРѕРґРµР»СЊ РґР»СЏ DeepSeek
+        messages=messages,
+        temperature=0.5,
+        max_tokens=800)
+        # РћР±СЂР°С‰Р°РµРјСЃСЏ Рє СЂРµР·СѓР»СЊС‚Р°С‚Сѓ С‡РµСЂРµР· СЃР»РѕРІР°СЂРЅС‹Р№ СЃРёРЅС‚Р°РєСЃРёСЃ
+        return response.choices[0].message.content
     except Exception as e:
         print(f"Error generating summary: {str(e)}")
-        return "Ошибка генерации резюме"
+        return "РћС€РёР±РєР° РіРµРЅРµСЂР°С†РёРё СЂРµР·СЋРјРµ"
 
 def create_docx(summary: str, file_id: str):
     """
-    Создает .docx файл с итоговым резюме.
+    РЎРѕР·РґР°РµС‚ .docx С„Р°Р№Р» СЃ РёС‚РѕРіРѕРІС‹Рј СЂРµР·СЋРјРµ.
     """
     doc = Document()
-    doc.add_heading("Резюме", level=1)
+    doc.add_heading("Р РµР·СЋРјРµ", level=1)
     doc.add_paragraph(summary)
     output_filename = f"{file_id}_summary.docx"
     doc.save(output_filename)
     return output_filename
 
-# Эндпоинт для скачивания итогового файла
+# Р­РЅРґРїРѕРёРЅС‚ РґР»СЏ СЃРєР°С‡РёРІР°РЅРёСЏ РёС‚РѕРіРѕРІРѕРіРѕ С„Р°Р№Р»Р°
 @app.get("/download/{user_id}/{filename}")
 async def download_file(user_id: str, filename: str):
     file_path = os.path.join(RESULT_DIR, user_id, filename)
@@ -180,23 +188,23 @@ async def download_file(user_id: str, filename: str):
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             filename=filename
         )
-    raise HTTPException(status_code=404, detail="Файл не найден")
+    raise HTTPException(status_code=404, detail="Р¤Р°Р№Р» РЅРµ РЅР°Р№РґРµРЅ")
 
-# Эндпоинт для получения истории обработанных файлов текущего пользователя
+# Р­РЅРґРїРѕРёРЅС‚ РґР»СЏ РїРѕР»СѓС‡РµРЅРёСЏ РёСЃС‚РѕСЂРёРё РѕР±СЂР°Р±РѕС‚Р°РЅРЅС‹С… С„Р°Р№Р»РѕРІ С‚РµРєСѓС‰РµРіРѕ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ
 @app.get("/history", response_class=JSONResponse)
 async def get_history(request: Request):
     user_id = request.session.get("user_id")
     if not user_id:
-        return JSONResponse({"history": []})
+        return JSONResponse({"history": [], "user_id": None})
     user_dir = os.path.join(RESULT_DIR, user_id)
     if not os.path.exists(user_dir):
-        return JSONResponse({"history": []})
+        return JSONResponse({"history": [], "user_id": user_id})
     files = os.listdir(user_dir)
-    return JSONResponse({"history": files})
+    return JSONResponse({"history": files, "user_id": user_id})
 
-# При необходимости можно смонтировать статические файлы (например, для CSS или JS)
+# РџСЂРё РЅРµРѕР±С…РѕРґРёРјРѕСЃС‚Рё РјРѕР¶РЅРѕ СЃРјРѕРЅС‚РёСЂРѕРІР°С‚СЊ СЃС‚Р°С‚РёС‡РµСЃРєРёРµ С„Р°Р№Р»С‹ (РЅР°РїСЂРёРјРµСЂ, РґР»СЏ CSS РёР»Рё JS)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", port=8000, reload=True)
