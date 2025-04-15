@@ -38,7 +38,7 @@ async def index(request: Request):
     index_path = os.path.join(BASE_DIR, "index.html")
     with open(index_path, "r", encoding="utf-8") as f:
         html_content = f.read()
-    return HTMLResponse(content=html_content)
+    return HTMLResponse(content=html_content, media_type="text/html")
 
 # Эндпоинт загрузки аудиофайла. Можно передать дополнительный параметр "prompt"
 @app.post("/upload/")

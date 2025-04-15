@@ -4,6 +4,15 @@
     <meta charset="UTF-8">
     <title>Загрузка аудио и получение резюме</title>
     <link rel="stylesheet" href="/static/style.css">
+    <style>
+      /* Пример стилей для контейнера игры */
+      #gameContainer {
+          width: 100%;
+          height: 300px;
+          background: #f0f0f0;
+          display: none; /* изначально скрыт */
+      }
+    </style>
 </head>
 <body>
     <div class="container">
@@ -16,64 +25,109 @@
             <button type="submit">Загрузить и обработать</button>
         </form>
 
-        <div class="progress" id="progressContainer">
+        <div class="progress" id="progressContainer" style="display:none;">
             <div class="progress-bar" id="progressBar"></div>
         </div>
 
         <div id="message" style="margin-top:20px;"></div>
+
+        <!-- Контейнер для игры -->
+        <div id="gameContainer">
+            <p>Пока идет обработка, поиграйте в игру.</p>
+            <!-- Здесь разместите вашу игру, например canvas для шариков -->
+        </div>
 
         <h2>История загрузок</h2>
         <div id="history"></div>
     </div>
 
     <script>
-        const uploadForm = document.getElementById('uploadForm');
-        const progressContainer = document.getElementById('progressContainer');
-        const progressBar = document.getElementById('progressBar');
-        const messageDiv = document.getElementById('message');
-        const historyDiv = document.getElementById('history');
+        console.log("Скрипт загружен!");
 
-        uploadForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const formData = new FormData(uploadForm);
+        document.addEventListener("DOMContentLoaded", () => {
+            console.log("DOM полностью загружен!");
 
-            progressContainer.style.display = "block";
-            progressBar.style.width = "0%";
-            messageDiv.innerText = "Загрузка файла...";
+            const uploadForm = document.getElementById('uploadForm');
+            const progressContainer = document.getElementById('progressContainer');
+            const progressBar = document.getElementById('progressBar');
+            const messageDiv = document.getElementById('message');
+            const historyDiv = document.getElementById('history');
+            const gameContainer = document.getElementById('gameContainer');
+            const submitButton = uploadForm.querySelector('button[type="submit"]');
 
-            const response = await fetch('/upload/', {
-                method: 'POST',
-                body: formData
-            });
-            const result = await response.json();
-            messageDiv.innerText = result.message;
-            progressBar.style.width = "100%";
-
-            // Обновляем историю загрузок через несколько секунд, чтобы дать время на обработку
-            setTimeout(fetchHistory, 5000);
-        });
-
-        // Функция для получения истории файлов
-        async function fetchHistory() {
-            const response = await fetch('/history');
-            const data = await response.json();
-            if (data.history && data.history.length > 0) {
-                let html = "<ul>";
-                // Если вы передаете также user_id, то можно использовать его:
-                const userId = data.user_id || ""; // или задать значение из сессии/шаблона
-                data.history.forEach(file => {
-                    const downloadUrl = `/download/${userId}/${file}`;
-                    html += `<li><a href="${downloadUrl}" target="_blank">${file}</a></li>`;
-                });
-                html += "</ul>";
-                historyDiv.innerHTML = html;
-            } else {
-                historyDiv.innerHTML = "История пуста.";
+            function startGame() {
+                console.log("Игра запущена");
+                gameContainer.style.display = "block";
             }
-        }
 
-        // Загружаем историю при старте страницы
-        fetchHistory();
+            function stopGame() {
+                console.log("Игра остановлена");
+                gameContainer.style.display = "none";
+            }
+
+            async function pollHistory() {
+                console.log("pollHistory вызван");
+                const pollInterval = 2000;
+                const interval = setInterval(async () => {
+                    const response = await fetch('/history');
+                    const data = await response.json();
+                    console.log("pollHistory response:", data);
+                    if (data.history && data.history.length > 0) {
+                        let html = "<ul>";
+                        const userId = data.user_id || "";
+                        data.history.forEach(file => {
+                            const downloadUrl = `/download/${userId}/${file}`;
+                            html += `<li><a href="${downloadUrl}" target="_blank">${file}</a></li>`;
+                        });
+                        html += "</ul>";
+                        historyDiv.innerHTML = html;
+                        clearInterval(interval);
+                        stopGame();
+                        submitButton.disabled = false;
+                    } else {
+                        historyDiv.innerHTML = "<em>Файл обрабатывается...</em>";
+                    }
+                }, pollInterval);
+            }
+
+            uploadForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                console.log("Форма отправлена");
+                const formData = new FormData(uploadForm);
+
+                submitButton.disabled = true;
+                progressContainer.style.display = "block";
+                progressBar.style.width = "0%";
+                messageDiv.innerText = "Загрузка файла...";
+                startGame();
+
+                const response = await fetch('/upload/', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+                console.log("Ответ от /upload/:", result);
+                messageDiv.innerText = result.message;
+                progressBar.style.width = "100%";
+                pollHistory();
+            });
+
+            fetch('/history')
+                .then(response => response.json())
+                .then(data => {
+                    console.log("Initial history:", data);
+                    if (data.history && data.history.length > 0) {
+                        let html = "<ul>";
+                        const userId = data.user_id || "";
+                        data.history.forEach(file => {
+                            const downloadUrl = `/download/${userId}/${file}`;
+                            html += `<li><a href="${downloadUrl}" target="_blank">${file}</a></li>`;
+                        });
+                        html += "</ul>";
+                        historyDiv.innerHTML = html;
+                    }
+                });
+        });
     </script>
 </body>
 </html>
