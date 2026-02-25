@@ -20,6 +20,11 @@
         <form id="uploadForm" enctype="multipart/form-data">
             <label for="audioFile">Выберите аудиофайл:</label><br>
             <input type="file" id="audioFile" name="file" accept="audio/*" required><br><br>
+            <label for="engine">Движок транскрибации:</label><br>
+            <select id="engine" name="engine" required>
+                <option value="whisper">Whisper (локально, CPU)</option>
+                <option value="speechkit">Yandex SpeechKit (облако)</option>
+            </select><br><br>
             <label for="prompt">Промпт (необязательно):</label><br>
             <textarea id="prompt" name="prompt" rows="3" cols="50" placeholder="Например: Создай краткое содержание в виде списка ключевых тезисов..."></textarea><br><br>
             <button type="submit">Загрузить и обработать</button>
@@ -65,13 +70,52 @@
                 gameContainer.style.display = "none";
             }
 
-            async function pollHistory() {
-                console.log("pollHistory вызван");
+            async function pollStatus(fileId) {
+                console.log("pollStatus вызван для fileId:", fileId);
                 const pollInterval = 2000;
                 const interval = setInterval(async () => {
+                    try {
+                        const response = await fetch(`/status/${fileId}`);
+                        const data = await response.json();
+                        console.log("pollStatus response:", data);
+                        
+                        // Обновляем прогресс-бар
+                        if (data.progress !== undefined) {
+                            progressBar.style.width = `${data.progress}%`;
+                        }
+                        
+                        // Обновляем сообщение
+                        if (data.message) {
+                            messageDiv.innerText = data.message;
+                        }
+                        
+                        if (data.status === "done") {
+                            clearInterval(interval);
+                            stopGame();
+                            submitButton.disabled = false;
+                            messageDiv.innerText = "Обработка завершена!";
+                            if (data.download_url) {
+                                messageDiv.innerHTML += `<br><a href="${data.download_url}" target="_blank" style="color: #007bff; text-decoration: underline;">Скачать результат</a>`;
+                            }
+                            // Обновляем историю
+                            await updateHistory();
+                        } else if (data.status === "error") {
+                            clearInterval(interval);
+                            stopGame();
+                            submitButton.disabled = false;
+                            messageDiv.innerText = `Ошибка: ${data.error || data.message || "Неизвестная ошибка"}`;
+                            messageDiv.style.color = "red";
+                        }
+                    } catch (error) {
+                        console.error("Error polling status:", error);
+                    }
+                }, pollInterval);
+            }
+
+            async function updateHistory() {
+                try {
                     const response = await fetch('/history');
                     const data = await response.json();
-                    console.log("pollHistory response:", data);
                     if (data.history && data.history.length > 0) {
                         let html = "<ul>";
                         const userId = data.user_id || "";
@@ -81,13 +125,12 @@
                         });
                         html += "</ul>";
                         historyDiv.innerHTML = html;
-                        clearInterval(interval);
-                        stopGame();
-                        submitButton.disabled = false;
                     } else {
-                        historyDiv.innerHTML = "<em>Файл обрабатывается...</em>";
+                        historyDiv.innerHTML = "<em>История пуста</em>";
                     }
-                }, pollInterval);
+                } catch (error) {
+                    console.error("Error updating history:", error);
+                }
             }
 
             uploadForm.addEventListener('submit', async (e) => {
@@ -101,32 +144,35 @@
                 messageDiv.innerText = "Загрузка файла...";
                 startGame();
 
-                const response = await fetch('/upload/', {
-                    method: 'POST',
-                    body: formData
-                });
-                const result = await response.json();
-                console.log("Ответ от /upload/:", result);
-                messageDiv.innerText = result.message;
-                progressBar.style.width = "100%";
-                pollHistory();
+                try {
+                    const response = await fetch('/upload/', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    const result = await response.json();
+                    console.log("Ответ от /upload/:", result);
+                    messageDiv.innerText = result.message;
+                    progressBar.style.width = "10%";
+                    
+                    if (result.file_id) {
+                        pollStatus(result.file_id);
+                    } else {
+                        messageDiv.innerText = "Ошибка: не получен file_id";
+                        messageDiv.style.color = "red";
+                        submitButton.disabled = false;
+                        stopGame();
+                    }
+                } catch (error) {
+                    console.error("Error uploading file:", error);
+                    messageDiv.innerText = `Ошибка загрузки: ${error.message}`;
+                    messageDiv.style.color = "red";
+                    submitButton.disabled = false;
+                    stopGame();
+                }
             });
 
-            fetch('/history')
-                .then(response => response.json())
-                .then(data => {
-                    console.log("Initial history:", data);
-                    if (data.history && data.history.length > 0) {
-                        let html = "<ul>";
-                        const userId = data.user_id || "";
-                        data.history.forEach(file => {
-                            const downloadUrl = `/download/${userId}/${file}`;
-                            html += `<li><a href="${downloadUrl}" target="_blank">${file}</a></li>`;
-                        });
-                        html += "</ul>";
-                        historyDiv.innerHTML = html;
-                    }
-                });
+            // Загружаем историю при загрузке страницы
+            updateHistory();
         });
     </script>
 </body>
