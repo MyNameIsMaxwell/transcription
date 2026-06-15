@@ -1,113 +1,454 @@
-/* Сброс стилей для базовой унификации отображения */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+
 * {
     margin: 0;
     padding: 0;
     box-sizing: border-box;
 }
 
-/* Глобальные стили страницы */
+:root {
+    --primary: #0a0a0a;
+    --on-primary: #ffffff;
+    --brand-green: #00d4a4;
+    --brand-green-deep: #00b48a;
+    --brand-error: #d45656;
+    --canvas: #ffffff;
+    --surface: #f7f7f7;
+    --surface-soft: #fafafa;
+    --hairline: #e5e5e5;
+    --hairline-soft: #ededed;
+    --ink: #0a0a0a;
+    --charcoal: #1c1c1e;
+    --slate: #3a3a3c;
+    --steel: #5a5a5c;
+    --stone: #888888;
+    --muted: #a8a8aa;
+    --on-dark: #ffffff;
+    --rounded-sm: 6px;
+    --rounded-md: 8px;
+    --rounded-lg: 12px;
+    --rounded-full: 9999px;
+}
+
 body {
-    font-family: 'Helvetica Neue', Arial, sans-serif;
-    background-color: #f8f9fa;
-    color: #333;
-    line-height: 1.6;
-    padding: 20px;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background-color: var(--surface-soft);
+    color: var(--ink);
+    line-height: 1.5;
+    font-size: 16px;
+    min-height: 100vh;
 }
 
-/* Основной контейнер с центровкой */
-.container {
-    max-width: 800px;
+.app-wrapper {
+    max-width: 720px;
     margin: 0 auto;
-    padding: 20px;
-    background: #fff;
-    border-radius: 8px;
-    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    padding: 64px 24px;
 }
 
-/* Заголовки */
-h1, h2, h3 {
+.app-header {
     text-align: center;
+    margin-bottom: 48px;
+}
+
+.app-header h1 {
+    font-size: 36px;
+    font-weight: 600;
+    line-height: 1.20;
+    letter-spacing: -0.5px;
+    color: var(--ink);
+    margin-bottom: 8px;
+}
+
+.app-header p {
+    font-size: 16px;
+    color: var(--steel);
+    line-height: 1.5;
+}
+
+/* Card */
+.card {
+    background: var(--canvas);
+    border: 1px solid var(--hairline);
+    border-radius: var(--rounded-lg);
+    padding: 32px;
+    margin-bottom: 24px;
+}
+
+.card-title {
+    font-size: 18px;
+    font-weight: 600;
+    line-height: 1.40;
+    color: var(--ink);
     margin-bottom: 20px;
 }
 
-/* Стилизация формы */
-form {
-    display: flex;
-    flex-direction: column;
-    gap: 15px;
-    margin-bottom: 30px;
+/* Form */
+.form-group {
+    margin-bottom: 20px;
 }
 
-label {
-    font-weight: bold;
-    margin-bottom: 5px;
-}
-
-input[type="file"],
-textarea {
-    padding: 10px;
-    border: 1px solid #ced4da;
-    border-radius: 4px;
+.form-label {
+    display: block;
     font-size: 14px;
+    font-weight: 500;
+    color: var(--charcoal);
+    margin-bottom: 6px;
 }
 
-/* Кнопки */
-button,
-input[type="submit"] {
-    padding: 12px 20px;
-    border: none;
-    background-color: #007bff;
-    color: #fff;
-    font-size: 16px;
+.form-label-hint {
+    font-weight: 400;
+    color: var(--stone);
+}
+
+.file-input-wrapper {
+    position: relative;
+    border: 2px dashed var(--hairline);
+    border-radius: var(--rounded-md);
+    padding: 32px 24px;
+    text-align: center;
     cursor: pointer;
-    border-radius: 4px;
-    transition: background-color 0.3s ease;
+    transition: border-color 150ms ease, background-color 150ms ease;
 }
 
-button:hover,
-input[type="submit"]:hover {
-    background-color: #0056b3;
+.file-input-wrapper:hover,
+.file-input-wrapper.dragover {
+    border-color: var(--brand-green);
+    background-color: rgba(0, 212, 164, 0.04);
 }
 
-/* Прогресс-бар */
-.progress {
+.file-input-wrapper input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.file-input-icon {
+    font-size: 32px;
+    margin-bottom: 8px;
+    color: var(--stone);
+}
+
+.file-input-text {
+    font-size: 14px;
+    color: var(--steel);
+}
+
+.file-input-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--brand-green-deep);
+    margin-top: 8px;
+}
+
+select,
+textarea {
     width: 100%;
-    background-color: #e9ecef;
-    border-radius: 4px;
+    font-family: inherit;
+    font-size: 14px;
+    color: var(--ink);
+    background: var(--canvas);
+    border: 1px solid var(--hairline);
+    border-radius: var(--rounded-md);
+    padding: 10px 14px;
+    transition: border-color 150ms ease;
+    outline: none;
+}
+
+select:focus,
+textarea:focus {
+    border-color: var(--brand-green);
+    box-shadow: 0 0 0 3px rgba(0, 212, 164, 0.1);
+}
+
+textarea {
+    resize: vertical;
+    min-height: 72px;
+    line-height: 1.5;
+}
+
+/* Buttons */
+.btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    padding: 12px 24px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--on-primary);
+    background-color: var(--primary);
+    border: none;
+    border-radius: var(--rounded-full);
+    cursor: pointer;
+    transition: background-color 150ms ease;
+}
+
+.btn-primary:hover {
+    background-color: var(--charcoal);
+}
+
+.btn-primary:disabled {
+    background-color: var(--hairline);
+    color: var(--muted);
+    cursor: not-allowed;
+}
+
+.btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 20px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--ink);
+    background-color: transparent;
+    border: 1px solid var(--hairline);
+    border-radius: var(--rounded-full);
+    cursor: pointer;
+    transition: background-color 150ms ease;
+    text-decoration: none;
+}
+
+.btn-secondary:hover {
+    background-color: var(--surface);
+}
+
+/* Progress */
+.progress-section {
+    display: none;
+    margin-bottom: 24px;
+}
+
+.progress-section.active {
+    display: block;
+}
+
+.progress-bar-container {
+    width: 100%;
+    height: 6px;
+    background: var(--hairline-soft);
+    border-radius: var(--rounded-full);
     overflow: hidden;
-    margin-top: 20px;
+    margin-bottom: 12px;
 }
 
-.progress-bar {
+.progress-bar-fill {
+    height: 100%;
     width: 0%;
-    height: 20px;
-    background-color: #28a745;
-    transition: width 0.5s ease-in-out;
+    background: var(--brand-green);
+    border-radius: var(--rounded-full);
+    transition: width 0.4s ease;
 }
 
-/* Стили для блока истории загрузок */
-#history ul {
-    list-style-type: none;
+.progress-status {
+    font-size: 14px;
+    color: var(--steel);
+    text-align: center;
+}
+
+.progress-status.error {
+    color: var(--brand-error);
+}
+
+.progress-status.done {
+    color: var(--brand-green-deep);
+}
+
+/* Task status panel */
+.status-panel {
+    display: none;
+    background: var(--surface);
+    border-radius: var(--rounded-md);
+    padding: 20px;
+    margin-bottom: 24px;
+}
+
+.status-panel.active {
+    display: block;
+}
+
+.status-panel-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--stone);
+}
+
+.status-dot.running {
+    background: var(--brand-green);
+    animation: pulse 1.5s infinite;
+}
+
+.status-dot.done {
+    background: var(--brand-green-deep);
+}
+
+.status-dot.error {
+    background: var(--brand-error);
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+.status-label {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--steel);
+}
+
+.status-message {
+    font-size: 14px;
+    color: var(--charcoal);
+    margin-bottom: 12px;
+}
+
+.status-progress-text {
+    font-size: 13px;
+    color: var(--stone);
+}
+
+/* Download link */
+.download-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+    padding: 10px 20px;
+    background: var(--brand-green);
+    color: var(--primary);
+    font-size: 14px;
+    font-weight: 500;
+    border-radius: var(--rounded-full);
+    text-decoration: none;
+    transition: background-color 150ms ease;
+}
+
+.download-link:hover {
+    background: var(--brand-green-deep);
+    color: var(--on-dark);
+}
+
+/* History */
+.history-section {
+    margin-top: 32px;
+}
+
+.history-section .card-title {
+    margin-bottom: 16px;
+}
+
+.history-empty {
+    font-size: 14px;
+    color: var(--stone);
+    text-align: center;
+    padding: 24px 0;
+}
+
+.history-list {
+    list-style: none;
     padding: 0;
 }
 
-#history li {
-    padding: 10px;
-    border-bottom: 1px solid #dee2e6;
+.history-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--hairline-soft);
 }
 
-#history li a {
+.history-item:last-child {
+    border-bottom: none;
+}
+
+.history-item-name {
+    font-size: 14px;
+    color: var(--charcoal);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    margin-right: 12px;
+}
+
+.history-item-link {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--brand-green-deep);
     text-decoration: none;
-    color: #007bff;
+    white-space: nowrap;
 }
 
-#history li a:hover {
-    text-decoration: underline;
+.history-item-link:hover {
+    color: var(--brand-green);
 }
 
-/* Адаптивность */
-@media (max-width: 600px) {
-    .container {
-        padding: 10px;
+/* Game container */
+#gameContainer {
+    display: none;
+    margin-top: 24px;
+    background: var(--surface);
+    border-radius: var(--rounded-lg);
+    padding: 24px;
+    border: 1px solid var(--hairline-soft);
+}
+
+.game-hint {
+    font-size: 13px;
+    color: var(--stone);
+    text-align: center;
+    margin-bottom: 16px;
+}
+
+#gameCanvas {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    height: 200px;
+    border-radius: var(--rounded-md);
+    outline: none;
+    background: var(--primary);
+}
+
+#gameScore {
+    margin-top: 10px;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--steel);
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+    .app-wrapper {
+        padding: 32px 16px;
+    }
+
+    .app-header h1 {
+        font-size: 28px;
+    }
+
+    .card {
+        padding: 20px;
+    }
+
+    .file-input-wrapper {
+        padding: 24px 16px;
     }
 }

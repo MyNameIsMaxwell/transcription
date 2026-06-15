@@ -1,3 +1,7 @@
 /Lib/
 /Scripts/
 /.env
+/uploads/
+/results/
+/task_statuses.json
+/_pycache__/

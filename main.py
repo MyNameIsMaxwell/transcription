@@ -19,6 +19,7 @@ from faster_whisper import WhisperModel
 import subprocess
 import base64
 import json
+from urllib.parse import quote
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("DEEPSEEK_KEY"), base_url="https://api.deepseek.com")
@@ -37,8 +38,39 @@ os.makedirs(RESULT_DIR, exist_ok=True)
 # ThreadPoolExecutor для фоновых задач (чтобы не блокировать event loop)
 executor = ThreadPoolExecutor(max_workers=2)
 
-# Хранение статусов задач
+# Хранение статусов задач (в памяти + файл, чтобы пережить перезапуск сервера)
+TASKS_FILE = os.path.join(BASE_DIR, "task_statuses.json")
 task_statuses: Dict[str, Dict] = {}
+
+
+def load_task_statuses() -> None:
+    global task_statuses
+    if not os.path.exists(TASKS_FILE):
+        return
+    try:
+        with open(TASKS_FILE, "r", encoding="utf-8") as f:
+            task_statuses = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"Не удалось загрузить статусы задач: {e}")
+        task_statuses = {}
+
+
+def save_task_statuses() -> None:
+    try:
+        with open(TASKS_FILE, "w", encoding="utf-8") as f:
+            json.dump(task_statuses, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        print(f"Не удалось сохранить статусы задач: {e}")
+
+
+def update_task_status(file_id: str, **kwargs) -> None:
+    if file_id not in task_statuses:
+        task_statuses[file_id] = {}
+    task_statuses[file_id].update(kwargs)
+    save_task_statuses()
+
+
+load_task_statuses()
 
 class TranscriptionEngine(str, Enum):
     WHISPER = "whisper"
@@ -133,18 +165,25 @@ async def upload_audio(
         content = await file.read()
         f_out.write(content)
 
-    # Если пользователь не задал промпт, используем значение по умолчанию
     if not prompt:
-        prompt = "Создай краткое содержание в виде списка ключевых тезисов на основе текста пользователя"
+        prompt = (
+            "Ты — ассистент для создания резюме встреч. На основе транскрипции аудиозаписи создай структурированное резюме.Учитывай, что транскрипция может содержать ошибки и неточности:\n"
+            "1. **Тема встречи** — одно предложение.\n"
+            "2. **Ключевые решения** — пронумерованный список.\n"
+            "3. **Задачи и ответственные** — если упомянуты.\n"
+            "4. **Основные тезисы** — краткий список главных обсуждённых пунктов.\n"
+            "Пиши кратко и по делу. Язык — русский."
+        )
 
     # Инициализируем статус задачи
-    task_statuses[file_id] = {
-        "status": "queued",
-        "progress": 0,
-        "message": "Задача поставлена в очередь",
-        "download_url": None,
-        "error": None
-    }
+    update_task_status(
+        file_id,
+        status="queued",
+        progress=0,
+        message="Задача поставлена в очередь",
+        download_url=None,
+        error=None,
+    )
 
     # Запускаем фоновую задачу для обработки аудио через executor
     loop = asyncio.get_event_loop()
@@ -165,24 +204,27 @@ async def get_status(file_id: str):
 def process_audio(file_path: str, file_id: str, user_id: str, prompt: str, engine: TranscriptionEngine):
     try:
         # Обновляем статус: начата обработка
-        task_statuses[file_id].update({
-            "status": "running",
-            "progress": 10,
-            "message": "Начата обработка аудио"
-        })
+        update_task_status(
+            file_id,
+            status="running",
+            progress=10,
+            message="Начата обработка аудио",
+        )
 
         # 1. Разбивка аудио на части, если длительность больше 10 минут
-        task_statuses[file_id].update({
-            "progress": 20,
-            "message": "Разбивка аудио на части..."
-        })
+        update_task_status(
+            file_id,
+            progress=20,
+            message="Разбивка аудио на части...",
+        )
         parts = split_audio(file_path)
         
         # 2. Транскрибация
-        task_statuses[file_id].update({
-            "progress": 30,
-            "message": f"Транскрибация через {engine.value}..."
-        })
+        update_task_status(
+            file_id,
+            progress=30,
+            message=f"Транскрибация через {engine.value}...",
+        )
         transcripts = []
         total_parts = len(parts)
         for idx, part in enumerate(parts):
@@ -200,10 +242,11 @@ def process_audio(file_path: str, file_id: str, user_id: str, prompt: str, engin
             
             # Обновляем прогресс
             progress = 30 + int((idx + 1) / total_parts * 50)
-            task_statuses[file_id].update({
-                "progress": progress,
-                "message": f"Транскрибация: {idx + 1}/{total_parts} частей"
-            })
+            update_task_status(
+                file_id,
+                progress=progress,
+                message=f"Транскрибация: {idx + 1}/{total_parts} частей",
+            )
         
         full_text = " ".join(transcripts).strip()
 
@@ -212,17 +255,11 @@ def process_audio(file_path: str, file_id: str, user_id: str, prompt: str, engin
             raise ValueError("Транскрипция пуста. Возможно, аудио не содержит речи или произошла ошибка распознавания.")
 
         # 3. Генерация резюме через DeepSeek API
-        task_statuses[file_id].update({
-            "progress": 85,
-            "message": "Генерация резюме..."
-        })
+        update_task_status(file_id, progress=85, message="Генерация резюме...")
         summary = generate_summary(full_text, prompt)
 
         # 4. Создание итогового Word файла (.docx)
-        task_statuses[file_id].update({
-            "progress": 90,
-            "message": "Создание документа..."
-        })
+        update_task_status(file_id, progress=90, message="Создание документа...")
         result_filename = create_docx(summary, file_id)
 
         # 5. Сохранение результата в истории пользователя (директория RESULT_DIR/user_id)
@@ -241,20 +278,22 @@ def process_audio(file_path: str, file_id: str, user_id: str, prompt: str, engin
             os.remove(file_path)
 
         # Обновляем статус: завершено
-        task_statuses[file_id].update({
-            "status": "done",
-            "progress": 100,
-            "message": "Обработка завершена",
-            "download_url": f"/download/{user_id}/{result_filename}"
-        })
+        update_task_status(
+            file_id,
+            status="done",
+            progress=100,
+            message="Обработка завершена",
+            download_url=f"/download/{user_id}/{quote(result_filename)}",
+        )
     except Exception as e:
         error_msg = str(e)
         print(f"Error processing file {file_id}: {error_msg}")
-        task_statuses[file_id].update({
-            "status": "error",
-            "message": f"Ошибка обработки: {error_msg}",
-            "error": error_msg
-        })
+        update_task_status(
+            file_id,
+            status="error",
+            message=f"Ошибка обработки: {error_msg}",
+            error=error_msg,
+        )
 
 def prepare_audio_for_transcription(audio_path: str) -> str:
     """
@@ -298,16 +337,15 @@ def split_audio(file_path: str):
 
     parts = []
     num_parts = (duration_ms // max_duration) + (1 if duration_ms % max_duration else 0)
-    base, ext = os.path.splitext(file_path)
+    base, _ = os.path.splitext(file_path)
     for i in range(num_parts):
         try:
             start_ms = i * max_duration
             end_ms = min((i + 1) * max_duration, duration_ms)
             chunk = audio[start_ms:end_ms]
-            part_filename = f"{base}_part{i+1}{ext}"
-            # Экспортируем часть; формат определяется по расширению (без точки)
-            export_format = ext[1:] if ext else "wav"
-            chunk.export(part_filename, format=export_format)
+            # Временные части всегда в WAV — надёжнее, чем повторный экспорт в m4a/mp3
+            part_filename = f"{base}_part{i+1}.wav"
+            chunk.export(part_filename, format="wav")
             parts.append(part_filename)
         except Exception as e:
             # Очищаем уже созданные части при ошибке
@@ -373,8 +411,8 @@ def transcribe_with_speechkit(audio_path: str) -> str:
     Для длинных аудио разбивает на короткие фрагменты (20-30 секунд).
     """
     try:
-        api_key = os.getenv("YANDEX_API_KEY")
-        folder_id = os.getenv("YANDEX_FOLDER_ID")
+        api_key = os.getenv("YANDEX_API_KEY", "").strip()
+        folder_id = os.getenv("YANDEX_FOLDER_ID", "").strip()
         lang = os.getenv("YANDEX_LANG", "ru-RU")
         
         if not api_key or not folder_id:
@@ -458,13 +496,19 @@ def _transcribe_speechkit_chunk(audio_segment: AudioSegment, api_key: str, folde
             raise RuntimeError(f"SpeechKit API вернул ошибку {response.status_code}: {error_text}")
         
         result = response.json()
-        
-        # Извлекаем текст из ответа
-        if "result" in result and "alternatives" in result["result"]:
-            alternatives = result["result"]["alternatives"]
-            if alternatives and len(alternatives) > 0:
-                return alternatives[0].get("text", "")
-        
+
+        # SpeechKit REST v1: {"result": "распознанный текст"}
+        if isinstance(result.get("result"), str):
+            return result["result"].strip()
+
+        # Формат v2/v3 с alternatives (на случай смены API)
+        nested = result.get("result")
+        if isinstance(nested, dict):
+            alternatives = nested.get("alternatives", [])
+            if alternatives:
+                return alternatives[0].get("text", "").strip()
+
+        print(f"SpeechKit: неожиданный формат ответа: {result}")
         return ""
     finally:
         # Удаляем временный файл
@@ -492,8 +536,8 @@ def generate_summary(text: str, prompt: str) -> str:
         response = client.chat.completions.create(
             model="deepseek-chat",
             messages=messages,
-            temperature=0.5,
-            max_tokens=1000
+            temperature=0.4,
+            max_tokens=2000
         )
         # Обращаемся к результату через словарный синтаксис
         return response.choices[0].message.content
@@ -509,11 +553,12 @@ def create_docx(summary: str, file_id: str):
     """
     Создает .docx файл с итоговым резюме.
     """
+    from datetime import datetime
     doc = Document()
-    doc.add_heading("Резюме", level=1)
+    doc.add_heading("Резюме встречи", level=1)
     doc.add_paragraph(summary)
-    output_filename = f"{file_id}_summary.docx"
-    # Сохраняем в абсолютный путь
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    output_filename = f"Резюме_встречи_{timestamp}.docx"
     output_path = os.path.join(BASE_DIR, output_filename)
     doc.save(output_path)
     return output_filename
@@ -547,4 +592,5 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), na
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", port=8000, reload=True)
+    reload = os.getenv("UVICORN_RELOAD", "false").lower() == "true"
+    uvicorn.run("main:app", port=8000, reload=reload)

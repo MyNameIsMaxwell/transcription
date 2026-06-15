@@ -2,112 +2,302 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Загрузка аудио и получение резюме</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Транскрибация — резюме встреч</title>
     <link rel="stylesheet" href="/static/style.css">
-    <style>
-      /* Пример стилей для контейнера игры */
-      #gameContainer {
-          width: 100%;
-          height: 300px;
-          background: #f0f0f0;
-          display: none; /* изначально скрыт */
-      }
-    </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Загрузите аудиофайл для получения резюме</h1>
-        <form id="uploadForm" enctype="multipart/form-data">
-            <label for="audioFile">Выберите аудиофайл:</label><br>
-            <input type="file" id="audioFile" name="file" accept="audio/*" required><br><br>
-            <label for="engine">Движок транскрибации:</label><br>
-            <select id="engine" name="engine" required>
-                <option value="whisper">Whisper (локально, CPU)</option>
-                <option value="speechkit">Yandex SpeechKit (облако)</option>
-            </select><br><br>
-            <label for="prompt">Промпт (необязательно):</label><br>
-            <textarea id="prompt" name="prompt" rows="3" cols="50" placeholder="Например: Создай краткое содержание в виде списка ключевых тезисов..."></textarea><br><br>
-            <button type="submit">Загрузить и обработать</button>
-        </form>
+    <div class="app-wrapper">
+        <header class="app-header">
+            <h1>Транскрибация аудио</h1>
+            <p>Загрузите запись встречи и получите структурированное резюме</p>
+        </header>
 
-        <div class="progress" id="progressContainer" style="display:none;">
-            <div class="progress-bar" id="progressBar"></div>
-        </div>
+        <!-- Upload form -->
+        <section class="card">
+            <h2 class="card-title">Загрузка файла</h2>
+            <form id="uploadForm" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label class="form-label">Аудиофайл</label>
+                    <div class="file-input-wrapper" id="dropZone">
+                        <div class="file-input-icon">&#9835;</div>
+                        <div class="file-input-text">Перетащите файл сюда или нажмите для выбора</div>
+                        <div class="file-input-name" id="fileName"></div>
+                        <input type="file" id="audioFile" name="file" accept="audio/*" required>
+                    </div>
+                </div>
 
-        <div id="message" style="margin-top:20px;"></div>
+                <div class="form-group">
+                    <label class="form-label" for="engine">Движок транскрибации</label>
+                    <select id="engine" name="engine">
+                        <option value="whisper">Whisper (локально, CPU)</option>
+                        <option value="speechkit">Yandex SpeechKit (облако)</option>
+                    </select>
+                </div>
 
-        <!-- Контейнер для игры -->
+                <div class="form-group">
+                    <label class="form-label" for="prompt">
+                        Промпт для резюме
+                        <span class="form-label-hint">(необязательно)</span>
+                    </label>
+                    <textarea id="prompt" name="prompt" placeholder="Оставьте пустым для стандартного резюме встречи..."></textarea>
+                </div>
+
+                <button type="submit" class="btn-primary" id="submitBtn">Загрузить и обработать</button>
+            </form>
+        </section>
+
+        <!-- Status panel -->
+        <section class="status-panel" id="statusPanel">
+            <div class="status-panel-header">
+                <div class="status-dot" id="statusDot"></div>
+                <span class="status-label" id="statusLabel">В очереди</span>
+            </div>
+            <div class="progress-bar-container">
+                <div class="progress-bar-fill" id="progressBar"></div>
+            </div>
+            <div class="status-message" id="statusMessage">Ожидание...</div>
+            <div class="status-progress-text" id="statusPercent"></div>
+            <div id="downloadArea"></div>
+        </section>
+
+        <!-- Game -->
         <div id="gameContainer">
-            <p>Пока идет обработка, поиграйте в игру.</p>
-            <!-- Здесь разместите вашу игру, например canvas для шариков -->
+            <p class="game-hint">Пока идёт обработка — сыграйте в змейку. Стрелки для управления, пробел — заново.</p>
+            <canvas id="gameCanvas" tabindex="0"></canvas>
+            <div id="gameScore">Счёт: 0</div>
         </div>
 
-        <h2>История загрузок</h2>
-        <div id="history"></div>
+        <!-- History -->
+        <section class="history-section">
+            <div class="card">
+                <h2 class="card-title">История обработок</h2>
+                <div id="history">
+                    <div class="history-empty">Пока нет обработанных файлов</div>
+                </div>
+            </div>
+        </section>
     </div>
 
     <script>
-        console.log("Скрипт загружен!");
-
         document.addEventListener("DOMContentLoaded", () => {
-            console.log("DOM полностью загружен!");
-
             const uploadForm = document.getElementById('uploadForm');
-            const progressContainer = document.getElementById('progressContainer');
             const progressBar = document.getElementById('progressBar');
-            const messageDiv = document.getElementById('message');
+            const statusPanel = document.getElementById('statusPanel');
+            const statusDot = document.getElementById('statusDot');
+            const statusLabel = document.getElementById('statusLabel');
+            const statusMessage = document.getElementById('statusMessage');
+            const statusPercent = document.getElementById('statusPercent');
+            const downloadArea = document.getElementById('downloadArea');
             const historyDiv = document.getElementById('history');
             const gameContainer = document.getElementById('gameContainer');
-            const submitButton = uploadForm.querySelector('button[type="submit"]');
+            const gameCanvas = document.getElementById('gameCanvas');
+            const gameScore = document.getElementById('gameScore');
+            const submitBtn = document.getElementById('submitBtn');
+            const fileInput = document.getElementById('audioFile');
+            const fileName = document.getElementById('fileName');
+            const dropZone = document.getElementById('dropZone');
+
+            // File input UX
+            fileInput.addEventListener('change', () => {
+                if (fileInput.files.length > 0) {
+                    fileName.textContent = fileInput.files[0].name;
+                } else {
+                    fileName.textContent = '';
+                }
+            });
+
+            dropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropZone.classList.add('dragover');
+            });
+
+            dropZone.addEventListener('dragleave', () => {
+                dropZone.classList.remove('dragover');
+            });
+
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('dragover');
+                if (e.dataTransfer.files.length > 0) {
+                    fileInput.files = e.dataTransfer.files;
+                    fileName.textContent = e.dataTransfer.files[0].name;
+                }
+            });
+
+            // Game
+            const ctx = gameCanvas.getContext('2d');
+            let gameLoopId = null;
+            let snake = [];
+            let direction = { x: 1, y: 0 };
+            let nextDirection = { x: 1, y: 0 };
+            let food = { x: 5, y: 5 };
+            let score = 0;
+            let gameOver = false;
+            let tick = 0;
+            const speed = 6;
+            const gridSize = 16;
+            let cols, rows;
+
+            function resizeGameCanvas() {
+                const w = gameCanvas.clientWidth;
+                const h = gameCanvas.clientHeight;
+                gameCanvas.width = w;
+                gameCanvas.height = h;
+                cols = Math.floor(w / gridSize);
+                rows = Math.floor(h / gridSize);
+            }
+
+            function resetSnakeGame() {
+                resizeGameCanvas();
+                snake = [
+                    { x: 4, y: Math.floor(rows / 2) },
+                    { x: 3, y: Math.floor(rows / 2) },
+                    { x: 2, y: Math.floor(rows / 2) },
+                ];
+                direction = { x: 1, y: 0 };
+                nextDirection = { x: 1, y: 0 };
+                score = 0;
+                gameOver = false;
+                tick = 0;
+                placeFood();
+                updateScore();
+            }
+
+            function placeFood() {
+                do {
+                    food = {
+                        x: Math.floor(Math.random() * cols),
+                        y: Math.floor(Math.random() * rows),
+                    };
+                } while (snake.some(p => p.x === food.x && p.y === food.y));
+            }
+
+            function updateScore() {
+                gameScore.textContent = `Счёт: ${score}`;
+            }
+
+            function drawCell(x, y, color) {
+                ctx.fillStyle = color;
+                ctx.fillRect(x * gridSize + 1, y * gridSize + 1, gridSize - 2, gridSize - 2);
+            }
+
+            function drawGame() {
+                ctx.fillStyle = '#0a0a0a';
+                ctx.fillRect(0, 0, gameCanvas.width, gameCanvas.height);
+                drawCell(food.x, food.y, '#00d4a4');
+                snake.forEach((p, i) => {
+                    drawCell(p.x, p.y, i === 0 ? '#00d4a4' : '#5a5a5c');
+                });
+                if (gameOver) {
+                    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+                    ctx.fillRect(0, 0, gameCanvas.width, gameCanvas.height);
+                    ctx.fillStyle = '#ffffff';
+                    ctx.font = '600 18px Inter, sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('Игра окончена', gameCanvas.width / 2, gameCanvas.height / 2 - 8);
+                    ctx.font = '14px Inter, sans-serif';
+                    ctx.fillText('Пробел — заново', gameCanvas.width / 2, gameCanvas.height / 2 + 16);
+                }
+            }
+
+            function stepSnake() {
+                if (gameOver) { drawGame(); return; }
+                tick += 1;
+                if (tick % speed !== 0) { drawGame(); return; }
+                direction = nextDirection;
+                const head = { x: snake[0].x + direction.x, y: snake[0].y + direction.y };
+                if (head.x < 0 || head.x >= cols || head.y < 0 || head.y >= rows || snake.some(p => p.x === head.x && p.y === head.y)) {
+                    gameOver = true;
+                    drawGame();
+                    return;
+                }
+                snake.unshift(head);
+                if (head.x === food.x && head.y === food.y) {
+                    score += 1;
+                    updateScore();
+                    placeFood();
+                } else {
+                    snake.pop();
+                }
+                drawGame();
+            }
+
+            function onGameKeyDown(e) {
+                if (gameContainer.style.display === 'none') return;
+                if (e.key === ' ' && gameOver) { e.preventDefault(); resetSnakeGame(); return; }
+                const moves = { ArrowUp: {x:0,y:-1}, ArrowDown: {x:0,y:1}, ArrowLeft: {x:-1,y:0}, ArrowRight: {x:1,y:0} };
+                if (!moves[e.key]) return;
+                e.preventDefault();
+                const m = moves[e.key];
+                if (snake.length > 1 && m.x === -direction.x && m.y === -direction.y) return;
+                nextDirection = m;
+            }
 
             function startGame() {
-                console.log("Игра запущена");
-                gameContainer.style.display = "block";
+                gameContainer.style.display = 'block';
+                resetSnakeGame();
+                gameCanvas.focus();
+                if (gameLoopId !== null) cancelAnimationFrame(gameLoopId);
+                const loop = () => { stepSnake(); gameLoopId = requestAnimationFrame(loop); };
+                gameLoopId = requestAnimationFrame(loop);
             }
 
             function stopGame() {
-                console.log("Игра остановлена");
-                gameContainer.style.display = "none";
+                gameContainer.style.display = 'none';
+                if (gameLoopId !== null) { cancelAnimationFrame(gameLoopId); gameLoopId = null; }
+            }
+
+            document.addEventListener('keydown', onGameKeyDown);
+
+            // Status
+            function showStatus(status, message, progress) {
+                statusPanel.classList.add('active');
+                statusDot.className = 'status-dot ' + (status || '');
+                const labels = { queued: 'В очереди', running: 'Обработка', done: 'Готово', error: 'Ошибка' };
+                statusLabel.textContent = labels[status] || status;
+                statusMessage.textContent = message || '';
+                statusMessage.className = 'status-message' + (status === 'error' ? ' error' : status === 'done' ? ' done' : '');
+                if (progress !== undefined) {
+                    progressBar.style.width = progress + '%';
+                    statusPercent.textContent = progress + '%';
+                }
             }
 
             async function pollStatus(fileId) {
-                console.log("pollStatus вызван для fileId:", fileId);
                 const pollInterval = 2000;
+                let notFoundCount = 0;
                 const interval = setInterval(async () => {
                     try {
                         const response = await fetch(`/status/${fileId}`);
-                        const data = await response.json();
-                        console.log("pollStatus response:", data);
-                        
-                        // Обновляем прогресс-бар
-                        if (data.progress !== undefined) {
-                            progressBar.style.width = `${data.progress}%`;
-                        }
-                        
-                        // Обновляем сообщение
-                        if (data.message) {
-                            messageDiv.innerText = data.message;
-                        }
-                        
-                        if (data.status === "done") {
-                            clearInterval(interval);
-                            stopGame();
-                            submitButton.disabled = false;
-                            messageDiv.innerText = "Обработка завершена!";
-                            if (data.download_url) {
-                                messageDiv.innerHTML += `<br><a href="${data.download_url}" target="_blank" style="color: #007bff; text-decoration: underline;">Скачать результат</a>`;
+                        if (response.status === 404) {
+                            notFoundCount += 1;
+                            if (notFoundCount >= 3) {
+                                clearInterval(interval);
+                                stopGame();
+                                submitBtn.disabled = false;
+                                showStatus('error', 'Задача не найдена. Попробуйте загрузить файл снова.', 0);
                             }
-                            // Обновляем историю
-                            await updateHistory();
-                        } else if (data.status === "error") {
+                            return;
+                        }
+                        const data = await response.json();
+                        showStatus(data.status, data.message, data.progress);
+
+                        if (data.status === 'done') {
                             clearInterval(interval);
                             stopGame();
-                            submitButton.disabled = false;
-                            messageDiv.innerText = `Ошибка: ${data.error || data.message || "Неизвестная ошибка"}`;
-                            messageDiv.style.color = "red";
+                            submitBtn.disabled = false;
+                            if (data.download_url) {
+                                downloadArea.innerHTML = `<a href="${data.download_url}" class="download-link" download>&#8595; Скачать резюме</a>`;
+                            }
+                            await updateHistory();
+                        } else if (data.status === 'error') {
+                            clearInterval(interval);
+                            stopGame();
+                            submitBtn.disabled = false;
                         }
-                    } catch (error) {
-                        console.error("Error polling status:", error);
+                    } catch (err) {
+                        console.error('Poll error:', err);
                     }
                 }, pollInterval);
             }
@@ -117,61 +307,48 @@
                     const response = await fetch('/history');
                     const data = await response.json();
                     if (data.history && data.history.length > 0) {
-                        let html = "<ul>";
-                        const userId = data.user_id || "";
-                        data.history.forEach(file => {
-                            const downloadUrl = `/download/${userId}/${file}`;
-                            html += `<li><a href="${downloadUrl}" target="_blank">${file}</a></li>`;
+                        let html = '<ul class="history-list">';
+                        data.history.forEach(item => {
+                            const url = item.url || '#';
+                            const displayName = item.name.replace('.docx', '');
+                            html += `<li class="history-item"><span class="history-item-name">${displayName}</span><a href="${url}" class="history-item-link" download>Скачать</a></li>`;
                         });
-                        html += "</ul>";
+                        html += '</ul>';
                         historyDiv.innerHTML = html;
                     } else {
-                        historyDiv.innerHTML = "<em>История пуста</em>";
+                        historyDiv.innerHTML = '<div class="history-empty">Пока нет обработанных файлов</div>';
                     }
-                } catch (error) {
-                    console.error("Error updating history:", error);
+                } catch (err) {
+                    console.error('History error:', err);
                 }
             }
 
             uploadForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
-                console.log("Форма отправлена");
                 const formData = new FormData(uploadForm);
-
-                submitButton.disabled = true;
-                progressContainer.style.display = "block";
-                progressBar.style.width = "0%";
-                messageDiv.innerText = "Загрузка файла...";
+                submitBtn.disabled = true;
+                downloadArea.innerHTML = '';
+                showStatus('queued', 'Загрузка файла...', 0);
                 startGame();
 
                 try {
-                    const response = await fetch('/upload/', {
-                        method: 'POST',
-                        body: formData
-                    });
+                    const response = await fetch('/upload/', { method: 'POST', body: formData });
                     const result = await response.json();
-                    console.log("Ответ от /upload/:", result);
-                    messageDiv.innerText = result.message;
-                    progressBar.style.width = "10%";
-                    
                     if (result.file_id) {
+                        showStatus('running', result.message, 10);
                         pollStatus(result.file_id);
                     } else {
-                        messageDiv.innerText = "Ошибка: не получен file_id";
-                        messageDiv.style.color = "red";
-                        submitButton.disabled = false;
+                        showStatus('error', 'Не удалось начать обработку', 0);
+                        submitBtn.disabled = false;
                         stopGame();
                     }
-                } catch (error) {
-                    console.error("Error uploading file:", error);
-                    messageDiv.innerText = `Ошибка загрузки: ${error.message}`;
-                    messageDiv.style.color = "red";
-                    submitButton.disabled = false;
+                } catch (err) {
+                    showStatus('error', `Ошибка загрузки: ${err.message}`, 0);
+                    submitBtn.disabled = false;
                     stopGame();
                 }
             });
 
-            // Загружаем историю при загрузке страницы
             updateHistory();
         });
     </script>
