@@ -28,9 +28,6 @@ import {
   ChevronRightIcon,
   CopyIcon,
   DownloadIcon,
-  CircleAlertIcon,
-  CircleCheckIcon,
-  Loader2Icon,
   RotateCcwIcon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -41,6 +38,8 @@ import type { FC } from "react";
 import { VoiceRecorder } from "@/components/voice-recorder";
 import { WELCOME_MESSAGE } from "@/lib/ui-text";
 import { startNewConversation } from "@/lib/conversation-id";
+import { IdeaCard, useIdea } from "@/components/idea-card";
+import type { Card } from "@/lib/idea-template";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -127,8 +126,7 @@ export const Thread: FC = () => {
             )}
           >
             <ThreadScrollToBottom />
-            <Composer />
-            <NewIdeaButton />
+            <ComposerOrDone />
           </ThreadPrimitive.ViewportFooter>
         </div>
       </ThreadPrimitive.Viewport>
@@ -172,39 +170,6 @@ const ThreadWelcome: FC = () => {
   );
 };
 
-type SubmitIdeaPart = {
-  args: { title?: string };
-  result?: { ok?: boolean; id?: string };
-  status: { type: string };
-};
-
-const IdeaSubmittedCard: FC<SubmitIdeaPart> = ({ args, result, status }) => {
-  const done = result?.ok;
-  // Сервер отклонил отправку (например, не спросили автора) — бот продолжит диалог, карточку не показываем.
-  if (result && !result.ok) return null;
-  const failed = status.type === "incomplete";
-  return (
-    <div className="border-foreground/10 my-3 flex items-center gap-3 rounded-xl border px-4 py-3">
-      {done ? (
-        <CircleCheckIcon className="size-5 shrink-0 text-emerald-500" />
-      ) : failed ? (
-        <CircleAlertIcon className="text-destructive size-5 shrink-0" />
-      ) : (
-        <Loader2Icon className="text-muted-foreground size-5 shrink-0 animate-spin" />
-      )}
-      <div className="min-w-0 text-sm">
-        <div className="font-medium">
-          {done ? "Идея отправлена" : failed ? "Не удалось отправить идею" : "Отправляю идею…"}
-        </div>
-        <div className="text-muted-foreground truncate">
-          {args.title}
-          {result?.id ? ` · № ${result.id}` : ""}
-        </div>
-      </div>
-    </div>
-  );
-};
-
 const NewIdeaButton: FC = () => (
   <AuiIf condition={(s) => s.thread.messages.length > 0}>
     <button
@@ -217,6 +182,27 @@ const NewIdeaButton: FC = () => (
     </button>
   </AuiIf>
 );
+
+/** После отправки идеи писать в этот диалог больше нельзя — предлагаем новую идею. */
+const ComposerOrDone: FC = () => {
+  const { submitted } = useIdea();
+  if (submitted) {
+    return (
+      <div className="flex flex-col items-center gap-2 py-2">
+        <Button onClick={startNewConversation} className="gap-1.5">
+          <RotateCcwIcon className="size-4" />
+          Предложить ещё одну идею
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <>
+      <Composer />
+      <NewIdeaButton />
+    </>
+  );
+};
 
 const Composer: FC = () => {
   return (
@@ -326,14 +312,10 @@ const AssistantMessage: FC = () => {
         <MessagePrimitive.Parts>
           {({ part }) => {
             if (part.type === "text") return <MarkdownText />;
-            if (part.type === "tool-call" && part.toolName === "submit_idea")
-              return (
-                <IdeaSubmittedCard
-                  args={part.args as SubmitIdeaPart["args"]}
-                  result={part.result as SubmitIdeaPart["result"]}
-                  status={part.status}
-                />
-              );
+            if (part.type === "tool-call" && part.toolName === "show_card") {
+              const { card, version } = part.args as { card: Card; version: number };
+              return <IdeaCard card={card} version={version} />;
+            }
             if (part.type === "tool-call")
               return part.toolUI ?? <ToolFallback {...part} />;
             return null;

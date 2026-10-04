@@ -9,8 +9,8 @@ build/
 # Virtual environment
 .venv/
 venv/
-Lib/
-Scripts/
+/Lib/
+/Scripts/
 pyvenv.cfg
 
 # Environment variables (API keys!)

@@ -6,6 +6,7 @@ import type { UIMessage } from "ai";
 import { useEffect, useState } from "react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { getConversationId } from "@/lib/conversation-id";
+import { IdeaProvider } from "@/components/idea-card";
 
 const MAX_PHOTO_MB = 10;
 
@@ -50,7 +51,17 @@ const photoAttachments: AttachmentAdapter = {
   async remove() {},
 };
 
-const Chat = ({ conversationId, initial }: { conversationId: string; initial: UIMessage[] }) => {
+type Submitted = { id: number; message: string } | null;
+
+const Chat = ({
+  conversationId,
+  initial,
+  submitted,
+}: {
+  conversationId: string;
+  initial: UIMessage[];
+  submitted: Submitted;
+}) => {
   const runtime = useChatRuntime({
     messages: initial,
     transport: new AssistantChatTransport({ api: "/api/chat", body: { conversationId } }),
@@ -59,25 +70,29 @@ const Chat = ({ conversationId, initial }: { conversationId: string; initial: UI
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <div className="h-dvh">
-        <Thread />
-      </div>
+      <IdeaProvider conversationId={conversationId} initialSubmitted={submitted}>
+        <div className="h-dvh">
+          <Thread />
+        </div>
+      </IdeaProvider>
     </AssistantRuntimeProvider>
   );
 };
 
 /** Сначала подтягиваем сохранённую переписку, потом создаём runtime с ней. */
 export const Assistant = () => {
-  const [state, setState] = useState<{ id: string; messages: UIMessage[] } | null>(null);
+  const [state, setState] = useState<{ id: string; messages: UIMessage[]; submitted: Submitted } | null>(null);
 
   useEffect(() => {
     const id = getConversationId();
     fetch(`/api/conversation?id=${encodeURIComponent(id)}`)
       .then((r) => (r.ok ? r.json() : { messages: [] }))
-      .then((j: { messages?: UIMessage[] }) => setState({ id, messages: j.messages ?? [] }))
-      .catch(() => setState({ id, messages: [] }));
+      .then((j: { messages?: UIMessage[]; submitted?: Submitted }) =>
+        setState({ id, messages: j.messages ?? [], submitted: j.submitted ?? null }),
+      )
+      .catch(() => setState({ id, messages: [], submitted: null }));
   }, []);
 
   if (!state) return <div className="bg-background h-dvh" />;
-  return <Chat conversationId={state.id} initial={state.messages} />;
+  return <Chat conversationId={state.id} initial={state.messages} submitted={state.submitted} />;
 };
