@@ -323,12 +323,57 @@ textarea {
     color: var(--stone);
 }
 
-/* Download link */
+.is-hidden {
+    display: none !important;
+}
+
+.prompt-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.prompt-chip {
+    padding: 6px 12px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--steel);
+    background: var(--canvas);
+    border: 1px solid var(--hairline);
+    border-radius: var(--rounded-full);
+    cursor: pointer;
+}
+
+.prompt-chip.is-active {
+    color: var(--on-primary);
+    background: var(--primary);
+    border-color: var(--primary);
+}
+
+.file-source-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.file-source-row .btn-secondary {
+    width: auto;
+}
+
+.download-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+}
+
 .download-link {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    margin-top: 12px;
+    margin-top: 0;
     padding: 10px 20px;
     background: var(--brand-green);
     color: var(--primary);
@@ -337,6 +382,31 @@ textarea {
     border-radius: var(--rounded-full);
     text-decoration: none;
     transition: background-color 150ms ease;
+}
+
+.download-link-secondary {
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--hairline);
+}
+
+.download-link-secondary:hover {
+    background: var(--surface);
+    color: var(--ink);
+}
+
+.history-kind {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--steel);
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: var(--rounded-sm);
+    padding: 2px 6px;
+    margin-right: 8px;
 }
 
 .download-link:hover {

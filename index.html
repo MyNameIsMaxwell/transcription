@@ -23,8 +23,12 @@
                         <div class="file-input-icon">&#9835;</div>
                         <div class="file-input-text">Перетащите файл сюда или нажмите для выбора</div>
                         <div class="file-input-name" id="fileName"></div>
-                        <input type="file" id="audioFile" name="file" accept="audio/*" required>
+                        <input type="file" id="audioFile" name="file" accept="audio/*,video/*,.m4a,.mp3,.wav,.ogg,.aac,.mp4,.mov,.webm,.caf">
                     </div>
+                    <div class="file-source-row">
+                        <button type="button" class="btn-secondary is-hidden" id="driveBtn">Открыть Google Диск</button>
+                    </div>
+                    <p class="form-label-hint is-hidden" id="driveHint"></p>
                 </div>
 
                 <div class="form-group">
@@ -40,7 +44,14 @@
                         Промпт для резюме
                         <span class="form-label-hint">(необязательно)</span>
                     </label>
-                    <textarea id="prompt" name="prompt" placeholder="Оставьте пустым для стандартного резюме встречи..."></textarea>
+                    <div class="prompt-presets" id="promptPresets">
+                        <button type="button" class="prompt-chip is-active" data-preset="default">Протокол встречи</button>
+                        <button type="button" class="prompt-chip" data-preset="tasks">Только задачи</button>
+                        <button type="button" class="prompt-chip" data-preset="brief">Для руководителя</button>
+                        <button type="button" class="prompt-chip" data-preset="process">Описание процесса</button>
+                    </div>
+                    <input type="hidden" name="preset" id="promptPreset" value="default">
+                    <textarea id="prompt" name="prompt" placeholder="Оставьте пустым, чтобы использовать выбранный шаблон. Или напишите свой промпт."></textarea>
                 </div>
 
                 <button type="submit" class="btn-primary" id="submitBtn">Загрузить и обработать</button>
@@ -97,6 +108,25 @@
             const fileInput = document.getElementById('audioFile');
             const fileName = document.getElementById('fileName');
             const dropZone = document.getElementById('dropZone');
+            const driveBtn = document.getElementById('driveBtn');
+            const driveHint = document.getElementById('driveHint');
+            const promptPresetInput = document.getElementById('promptPreset');
+
+            document.getElementById('promptPresets').addEventListener('click', (e) => {
+                const chip = e.target.closest('[data-preset]');
+                if (!chip) return;
+                document.querySelectorAll('.prompt-chip').forEach((el) => el.classList.remove('is-active'));
+                chip.classList.add('is-active');
+                promptPresetInput.value = chip.dataset.preset;
+            });
+
+            function setSelectedFile(file) {
+                if (!file) return;
+                const dt = new DataTransfer();
+                dt.items.add(file);
+                fileInput.files = dt.files;
+                fileName.textContent = file.name;
+            }
 
             // File input UX
             fileInput.addEventListener('change', () => {
@@ -120,8 +150,7 @@
                 e.preventDefault();
                 dropZone.classList.remove('dragover');
                 if (e.dataTransfer.files.length > 0) {
-                    fileInput.files = e.dataTransfer.files;
-                    fileName.textContent = e.dataTransfer.files[0].name;
+                    setSelectedFile(e.dataTransfer.files[0]);
                 }
             });
 
@@ -287,8 +316,15 @@
                             clearInterval(interval);
                             stopGame();
                             submitBtn.disabled = false;
-                            if (data.download_url) {
-                                downloadArea.innerHTML = `<a href="${data.download_url}" class="download-link" download>&#8595; Скачать резюме</a>`;
+                            if (data.download_url || data.transcript_url) {
+                                const parts = [];
+                                if (data.download_url) {
+                                    parts.push(`<a href="${data.download_url}" class="download-link" download>Скачать резюме</a>`);
+                                }
+                                if (data.transcript_url) {
+                                    parts.push(`<a href="${data.transcript_url}" class="download-link download-link-secondary" download>Скачать транскрипт</a>`);
+                                }
+                                downloadArea.innerHTML = `<div class="download-links">${parts.join("")}</div>`;
                             }
                             await updateHistory();
                         } else if (data.status === 'error') {
@@ -309,9 +345,17 @@
                     if (data.history && data.history.length > 0) {
                         let html = '<ul class="history-list">';
                         data.history.forEach(item => {
-                            const url = item.url || '#';
-                            const displayName = item.name.replace('.docx', '');
-                            html += `<li class="history-item"><span class="history-item-name">${displayName}</span><a href="${url}" class="history-item-link" download>Скачать</a></li>`;
+                            const name = typeof item === 'string' ? item : (item.name || '');
+                            const url = typeof item === 'string'
+                                ? `/download/${encodeURIComponent(name)}`
+                                : (item.url || '#');
+                            const kind = name.startsWith('Транскрипт_')
+                                ? 'Транскрипт'
+                                : name.startsWith('Резюме_')
+                                    ? 'Резюме'
+                                    : '';
+                            const displayName = name.replace('.docx', '');
+                            html += `<li class="history-item"><span class="history-item-name">${kind ? `<span class="history-kind">${kind}</span> ` : ""}${displayName}</span><a href="${url}" class="history-item-link" download>Скачать</a></li>`;
                         });
                         html += '</ul>';
                         historyDiv.innerHTML = html;
@@ -325,6 +369,10 @@
 
             uploadForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
+                if (!fileInput.files.length) {
+                    showStatus('error', 'Выберите файл с компьютера или с Google Диска', 0);
+                    return;
+                }
                 const formData = new FormData(uploadForm);
                 submitBtn.disabled = true;
                 downloadArea.innerHTML = '';
@@ -350,6 +398,100 @@
             });
 
             updateHistory();
+
+            let driveTokenClient = null;
+            let driveAccessToken = '';
+            let pickerInited = false;
+            let appConfig = {};
+
+            function loadScript(src) {
+                return new Promise((resolve, reject) => {
+                    const existing = document.querySelector(`script[src="${src}"]`);
+                    if (existing) { resolve(); return; }
+                    const script = document.createElement('script');
+                    script.src = src;
+                    script.onload = resolve;
+                    script.onerror = () => reject(new Error('Не удалось загрузить ' + src));
+                    document.head.appendChild(script);
+                });
+            }
+
+            function onDrivePicked(data) {
+                if (!data || data.action !== google.picker.Action.PICKED) return;
+                const docs = data.docs || [];
+                if (!docs.length) return;
+                const doc = docs[0];
+                driveHint.textContent = 'Скачиваем файл с Google Диска...';
+                fetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(doc.id) + '?alt=media', {
+                    headers: { Authorization: 'Bearer ' + driveAccessToken }
+                }).then(async (res) => {
+                    if (!res.ok) throw new Error('Google Диск вернул ' + res.status);
+                    const blob = await res.blob();
+                    const file = new File([blob], doc.name || 'recording', { type: blob.type || doc.mimeType || 'audio/mpeg' });
+                    setSelectedFile(file);
+                    driveHint.textContent = 'Файл с Диска выбран. Нажмите «Загрузить и обработать».';
+                }).catch((err) => {
+                    driveHint.textContent = 'Не удалось скачать файл с Диска: ' + err.message;
+                });
+            }
+
+            function openDrivePicker() {
+                const appId = appConfig.google_app_id || (appConfig.google_client_id || '').split('-')[0];
+                const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
+                    .setIncludeFolders(true)
+                    .setSelectFolderEnabled(false)
+                    .setMimeTypes('audio/mpeg,audio/mp4,audio/wav,audio/x-wav,audio/webm,audio/ogg,audio/aac,audio/x-m4a,audio/mp3,video/mp4,video/quicktime,video/webm,application/octet-stream');
+                const picker = new google.picker.PickerBuilder()
+                    .addView(view)
+                    .setOAuthToken(driveAccessToken)
+                    .setDeveloperKey(appConfig.google_api_key)
+                    .setCallback(onDrivePicked)
+                    .setTitle('Выберите запись встречи');
+                if (appId) picker.setAppId(appId);
+                picker.build().setVisible(true);
+            }
+
+            async function requestDriveToken() {
+                if (!appConfig.google_client_id || !appConfig.google_api_key) {
+                    throw new Error('Google Диск не настроен');
+                }
+                if (driveAccessToken) {
+                    openDrivePicker();
+                    return;
+                }
+                await loadScript('https://accounts.google.com/gsi/client');
+                await loadScript('https://apis.google.com/js/api.js');
+                await new Promise((resolve) => gapi.load('picker', resolve));
+                pickerInited = true;
+                driveTokenClient = google.accounts.oauth2.initTokenClient({
+                    client_id: appConfig.google_client_id,
+                    scope: 'https://www.googleapis.com/auth/drive.readonly',
+                    callback: (resp) => {
+                        if (resp && resp.access_token) {
+                            driveAccessToken = resp.access_token;
+                            openDrivePicker();
+                        } else {
+                            driveHint.textContent = 'Не удалось войти в Google. Попробуйте ещё раз.';
+                        }
+                    }
+                });
+                driveTokenClient.requestAccessToken({ prompt: '' });
+            }
+
+            fetch('/config').then((r) => r.json()).then((cfg) => {
+                appConfig = cfg || {};
+                if (appConfig.google_client_id && appConfig.google_api_key) {
+                    driveBtn.classList.remove('is-hidden');
+                    driveHint.classList.remove('is-hidden');
+                    driveHint.textContent = 'Можно открыть файл с Google Диска.';
+                }
+            }).catch(() => {});
+
+            driveBtn.addEventListener('click', () => {
+                requestDriveToken().catch((err) => {
+                    driveHint.textContent = err.message || 'Google Диск недоступен';
+                });
+            });
         });
     </script>
 </body>

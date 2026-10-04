@@ -10,23 +10,25 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from pydub import AudioSegment
-import openai
 from openai import OpenAI
 
 from dotenv import load_dotenv
 from docx import Document
 from faster_whisper import WhisperModel
 import subprocess
-import base64
 import json
 from urllib.parse import quote
 
 load_dotenv()
+
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-flash")
 client = OpenAI(api_key=os.getenv("DEEPSEEK_KEY"), base_url="https://api.deepseek.com")
 
 app = FastAPI()
-# Используем middleware для управления сессиями
-app.add_middleware(SessionMiddleware, secret_key="!secret")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SESSION_SECRET", "change-me-in-production"),
+)
 
 # Определяем директории для хранения загруженных файлов и результатов
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -75,6 +77,168 @@ load_task_statuses()
 class TranscriptionEngine(str, Enum):
     WHISPER = "whisper"
     SPEECHKIT = "speechkit"
+    GROQ = "groq"
+    STT_API = "stt_api"
+
+AUDIO_SPLIT_MS = 10 * 60 * 1000
+SUMMARY_CHUNK_CHARS = 40000
+
+PROMPT_SHARED_RULES = """
+Транскрипция может содержать ошибки распознавания, обрывки и повторы. Исправляй только очевидные оговорки. Не выдумывай факты, решения, имена, цифры, суммы и сроки.
+Если исполнитель, срок или сумма не названы явно — пиши «не назначен» / «не указан» / «неясно». Не догадывайся.
+Не пересказывай приветствия, болтовню и повторы. Каждое поручение — отдельная строка, задачи разных людей не сливай.
+Если в транскрипции есть таймкоды вида [мм:сс] или [чч:мм:сс], ставь их в таблицу задач.
+Язык — русский. Без канцелярита.
+"""
+
+PROMPT_PRESETS = {
+    "default": """Ты — секретарь совещания. Составь протокол, по которому человек, который не был на встрече, за одну-две минуты поймёт: зачем собрались, что решили и кто что делает.
+"""
+    + PROMPT_SHARED_RULES
+    + """
+Формат (Markdown):
+
+## Тема
+Одно-два предложения: зачем собрались и чем закончили.
+
+## Решения
+Пронумерованный список только явных договорённостей («решили», «согласовали», «утвердили», «оставляем как есть»). Если решений не было: «Явных решений не зафиксировано».
+
+## Задачи
+Таблица. Одна задача — одна строка. Не добавляй задачи, которых не было.
+
+| Задача | Ответственный | Срок | Таймкод |
+| --- | --- | --- | --- |
+
+## Важное
+Только цифры, ограничения и условия, без которых решения и задачи теряют смысл. Максимум 7 пунктов. Если такого нет — раздел не пиши.
+
+## Открытые вопросы
+Что не решили. Если таких нет — раздел не пиши.
+""",
+    "tasks": """Ты — секретарь. Из транскрипции извлеки ТОЛЬКО поручения. Никакого пересказа встречи.
+"""
+    + PROMPT_SHARED_RULES
+    + """
+Формат — только заголовок и таблица, больше ничего:
+
+## Задачи
+
+| Задача | Ответственный | Срок | Таймкод |
+| --- | --- | --- | --- |
+
+Правила таблицы:
+- Одна договорённость «сделать X» = одна строка.
+- Ответственный — ФИО или роль, как сказано. Если не сказано — «не назначен».
+- Срок — дата или формулировка из речи. Если не сказан — «не указан».
+- Таймкод — ближайшая метка из транскрипции. Если меток нет — «—».
+- Если поручений не было, вместо таблицы напиши: «Поручений не зафиксировано».
+""",
+    "brief": """Ты — помощник руководителя. Составь короткую служебную записку по транскрипции: что решили, какие риски, кто что делает.
+"""
+    + PROMPT_SHARED_RULES
+    + """
+Пиши плотно, без воды. Объём — не больше одной страницы.
+
+Формат (Markdown):
+
+## Коротко
+3–5 предложений: зачем встреча, чем закончили, что будет дальше.
+
+## Решения
+Маркированный список, только итог. Если решений нет: «Явных решений не зафиксировано».
+
+## Поручения
+| Кто | Что сделать | Срок |
+| --- | --- | --- |
+
+Если поручений нет — раздел не пиши.
+
+## Риски и развилки
+Только то, что прямо назвали как проблему, риск или нерешённый выбор. Максимум 5 пунктов. Если такого нет — раздел не пиши.
+""",
+    "process": """Ты — бизнес-аналитик процессного офиса. В транскрипции сотрудник или отдел рассказывает, как устроена их работа. Опиши процесс «как есть» последовательно, шаг за шагом, так, чтобы по твоему тексту аналитик мог без повторного прослушивания нарисовать BPMN-схему.
+
+Правила:
+- Транскрипция может содержать ошибки распознавания, обрывки и повторы. Исправляй только очевидные оговорки.
+- Описывай только то, что сказано. Не выдумывай шаги, роли, системы, документы, сроки и условия. Чего не хватает — пиши «не указано».
+- Участник может быть один (работа одного человека) или несколько (отдел, смежники, клиент). Если участник один — все шаги от его роли, но внешние стороны (клиент, другой отдел, система) называй отдельно.
+- Один шаг — одно действие. Формулировка шага: кто — что делает (глагол) — с чем — какой результат.
+- Называй роли, а не только имена: «Менеджер (Иван)». Если роль не ясна — «исполнитель не указан».
+- Развилки описывай явно, с условием и куда идёт процесс в каждом случае.
+- Если в транскрипции есть таймкоды вида [мм:сс] или [чч:мм:сс], ставь ближайший в конце шага.
+- Не пересказывай приветствия, отступления и повторы. Если рассказчик описывает процесс непоследовательно — восстанови порядок выполнения.
+- Без таблиц и без жирного шрифта. Только заголовки, абзацы и списки.
+- Язык — русский. Без канцелярита.
+
+Формат (Markdown):
+
+## Процесс
+Название процесса и одно-два предложения: зачем он нужен и чей он (отдел или сотрудник).
+
+## Границы
+- Старт: какое событие запускает процесс (заявка, письмо, дата, звонок и т. п.).
+- Финиш: чем процесс заканчивается и какой результат получается.
+
+## Участники
+- Роли и отделы внутри процесса.
+- Внешние стороны (клиент, смежные отделы, подрядчики).
+- Системы и документы, которые используются.
+
+## Ход процесса
+Нумерованные шаги в порядке выполнения, каждый с новой строки:
+1. Роль — действие — с чем — результат. [таймкод]
+
+Развилка — отдельным шагом с вариантами списком:
+5. Роль проверяет условие: …
+- Если …, то переход к шагу 6.
+- Иначе — переход к шагу 9.
+
+Параллельные работы помечай: «Одновременно: …». Ожидания и сроки указывай в шаге: «ждёт ответа до 3 рабочих дней». Последний шаг — конечное событие процесса.
+
+## Исключения и альтернативные пути
+Ошибки, возвраты на доработку, эскалации, отмены — где возникают (номер шага) и чем заканчиваются. Если таких нет — раздел не пиши.
+
+## Пробелы в описании
+Вопросы, которые нужно уточнить у рассказчика, чтобы построить корректную схему: неясные исполнители, условия развилок, что происходит при отказе, где хранится результат. Только по делу, максимум 10 пунктов.
+""",
+}
+
+DEFAULT_SUMMARY_PROMPT = PROMPT_PRESETS["default"]
+
+
+def resolve_summary_prompt(preset: str | None, custom_prompt: str | None) -> str:
+    custom = (custom_prompt or "").strip()
+    if custom:
+        return custom
+    key = (preset or "default").strip().lower()
+    return PROMPT_PRESETS.get(key, DEFAULT_SUMMARY_PROMPT)
+
+
+def format_timestamp(seconds: float) -> str:
+    total = int(max(0, seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def segments_to_transcript(segments, offset_sec: float = 0.0) -> tuple[str, str]:
+    plain_parts = []
+    timed_lines = []
+    for segment in segments:
+        if isinstance(segment, dict):
+            text = (segment.get("text") or "").strip()
+            start = float(segment.get("start") or 0)
+        else:
+            text = (getattr(segment, "text", "") or "").strip()
+            start = float(getattr(segment, "start", 0) or 0)
+        if not text:
+            continue
+        plain_parts.append(text)
+        timed_lines.append(f"[{format_timestamp(start + offset_sec)}] {text}")
+    return " ".join(plain_parts).strip(), "\n".join(timed_lines).strip()
 
 # Кэш для модели Whisper (загружается один раз)
 _whisper_model: Optional[WhisperModel] = None
@@ -138,12 +302,25 @@ async def index(request: Request):
         html_content = f.read()
     return HTMLResponse(content=html_content, media_type="text/html")
 
+
+@app.get("/config")
+async def public_config():
+    """Публичные настройки для фронтенда: Google Picker и доступные движки."""
+    return JSONResponse({
+        "google_client_id": os.getenv("GOOGLE_CLIENT_ID", "").strip(),
+        "google_api_key": os.getenv("GOOGLE_API_KEY", "").strip(),
+        "google_app_id": os.getenv("GOOGLE_APP_ID", "").strip(),
+        "groq_configured": bool(os.getenv("GROQ_API_KEY", "").strip()),
+    })
+
+
 # Эндпоинт загрузки аудиофайла. Можно передать дополнительный параметр "prompt" и "engine"
 @app.post("/upload/")
 async def upload_audio(
     request: Request,
     file: UploadFile = File(...),
     prompt: str = Form(None),
+    preset: str = Form("default"),
     engine: str = Form("whisper")
 ):
     user_id = request.session.get("user_id")
@@ -155,7 +332,10 @@ async def upload_audio(
     try:
         engine_enum = TranscriptionEngine(engine.lower())
     except ValueError:
-        raise HTTPException(status_code=400, detail=f"Неизвестный движок: {engine}. Доступны: whisper, speechkit")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Неизвестный движок: {engine}. Доступны: whisper, speechkit, groq, stt_api",
+        )
 
     # Сохраняем загруженный файл на сервер
     file_id = str(uuid.uuid4())
@@ -165,15 +345,7 @@ async def upload_audio(
         content = await file.read()
         f_out.write(content)
 
-    if not prompt:
-        prompt = (
-            "Ты — ассистент для создания резюме встреч. На основе транскрипции аудиозаписи создай структурированное резюме.Учитывай, что транскрипция может содержать ошибки и неточности:\n"
-            "1. **Тема встречи** — одно предложение.\n"
-            "2. **Ключевые решения** — пронумерованный список.\n"
-            "3. **Задачи и ответственные** — если упомянуты.\n"
-            "4. **Основные тезисы** — краткий список главных обсуждённых пунктов.\n"
-            "Пиши кратко и по делу. Язык — русский."
-        )
+    prompt = resolve_summary_prompt(preset, prompt)
 
     # Инициализируем статус задачи
     update_task_status(
@@ -182,12 +354,23 @@ async def upload_audio(
         progress=0,
         message="Задача поставлена в очередь",
         download_url=None,
+        transcript_url=None,
         error=None,
     )
 
     # Запускаем фоновую задачу для обработки аудио через executor
     loop = asyncio.get_event_loop()
-    loop.run_in_executor(executor, process_audio, file_path, file_id, user_id, prompt, engine_enum)
+    original_name = file.filename or "audio"
+    loop.run_in_executor(
+        executor,
+        process_audio,
+        file_path,
+        file_id,
+        user_id,
+        prompt,
+        engine_enum,
+        original_name,
+    )
 
     return JSONResponse({
         "message": "Файл загружен, обработка запущена",
@@ -201,7 +384,14 @@ async def get_status(file_id: str):
         raise HTTPException(status_code=404, detail="Задача не найдена")
     return JSONResponse(task_statuses[file_id])
 
-def process_audio(file_path: str, file_id: str, user_id: str, prompt: str, engine: TranscriptionEngine):
+def process_audio(
+    file_path: str,
+    file_id: str,
+    user_id: str,
+    prompt: str,
+    engine: TranscriptionEngine,
+    original_name: str = "audio",
+):
     try:
         # Обновляем статус: начата обработка
         update_task_status(
@@ -226,16 +416,13 @@ def process_audio(file_path: str, file_id: str, user_id: str, prompt: str, engin
             message=f"Транскрибация через {engine.value}...",
         )
         transcripts = []
+        timed_transcripts = []
         total_parts = len(parts)
         for idx, part in enumerate(parts):
-            if engine == TranscriptionEngine.WHISPER:
-                transcript = transcribe_with_whisper(part)
-            elif engine == TranscriptionEngine.SPEECHKIT:
-                transcript = transcribe_with_speechkit(part)
-            else:
-                raise ValueError(f"Неизвестный движок: {engine}")
-            
-            transcripts.append(transcript)
+            offset_sec = idx * (AUDIO_SPLIT_MS / 1000)
+            plain, timed = transcribe_audio(part, engine, offset_sec)
+            transcripts.append(plain)
+            timed_transcripts.append(timed)
             # Если файл является временным (от разбиения), удаляем его после транскрипции
             if part != file_path:
                 os.remove(part)
@@ -248,7 +435,8 @@ def process_audio(file_path: str, file_id: str, user_id: str, prompt: str, engin
                 message=f"Транскрибация: {idx + 1}/{total_parts} частей",
             )
         
-        full_text = " ".join(transcripts).strip()
+        full_text = " ".join(t for t in transcripts if t).strip()
+        timed_text = "\n".join(t for t in timed_transcripts if t).strip() or full_text
 
         # Проверяем, что транскрипция не пуста
         if not full_text:
@@ -258,32 +446,27 @@ def process_audio(file_path: str, file_id: str, user_id: str, prompt: str, engin
         update_task_status(file_id, progress=85, message="Генерация резюме...")
         summary = generate_summary(full_text, prompt)
 
-        # 4. Создание итогового Word файла (.docx)
-        update_task_status(file_id, progress=90, message="Создание документа...")
-        result_filename = create_docx(summary, file_id)
+        # 4. Два отдельных Word-файла: резюме и транскрипт
+        update_task_status(file_id, progress=90, message="Создание документов...")
+        summary_name, transcript_name = create_result_documents(
+            summary, timed_text, original_name, file_id
+        )
 
-        # 5. Сохранение результата в истории пользователя (директория RESULT_DIR/user_id)
         user_dir = os.path.join(RESULT_DIR, user_id)
         os.makedirs(user_dir, exist_ok=True)
-        final_path = os.path.join(user_dir, result_filename)
-        # Используем абсолютный путь для move
-        abs_result_path = os.path.join(BASE_DIR, result_filename)
-        if os.path.exists(abs_result_path):
-            shutil.move(abs_result_path, final_path)
-        elif os.path.exists(result_filename):
-            shutil.move(result_filename, final_path)
+        _move_result_file(summary_name, user_dir)
+        _move_result_file(transcript_name, user_dir)
 
-        # 6. Удаляем исходный аудиофайл, если он существует
         if os.path.exists(file_path):
             os.remove(file_path)
 
-        # Обновляем статус: завершено
         update_task_status(
             file_id,
             status="done",
             progress=100,
             message="Обработка завершена",
-            download_url=f"/download/{user_id}/{quote(result_filename)}",
+            download_url=f"/download/{user_id}/{quote(summary_name)}",
+            transcript_url=f"/download/{user_id}/{quote(transcript_name)}",
         )
     except Exception as e:
         error_msg = str(e)
@@ -330,7 +513,7 @@ def split_audio(file_path: str):
         )
     
     duration_ms = len(audio)
-    max_duration = 10 * 60 * 1000  # 10 минут в миллисекундах
+    max_duration = AUDIO_SPLIT_MS
 
     if duration_ms <= max_duration:
         return [file_path]
@@ -360,50 +543,129 @@ def split_audio(file_path: str):
     return parts
 
 
-def transcribe_with_whisper(audio_path: str) -> str:
+def transcribe_audio(audio_path: str, engine: TranscriptionEngine, offset_sec: float = 0.0) -> tuple[str, str]:
+    if engine == TranscriptionEngine.WHISPER:
+        return transcribe_with_whisper(audio_path, offset_sec)
+    if engine == TranscriptionEngine.SPEECHKIT:
+        text = transcribe_with_speechkit(audio_path)
+        return text, text
+    if engine == TranscriptionEngine.GROQ:
+        return transcribe_with_openai_stt(audio_path, "groq", offset_sec)
+    if engine == TranscriptionEngine.STT_API:
+        return transcribe_with_openai_stt(audio_path, "stt_api", offset_sec)
+    raise ValueError(f"Неизвестный движок: {engine}")
+
+
+def transcribe_with_whisper(audio_path: str, offset_sec: float = 0.0) -> tuple[str, str]:
     """
     Выполняет транскрипцию аудио через локальный faster-whisper (CPU).
+    Видеокарта не нужна.
     """
     try:
-        # Подготавливаем аудио (моно, 16kHz)
         prepared_path = prepare_audio_for_transcription(audio_path)
         is_prepared = (prepared_path != audio_path)
-        
+
         try:
-            # Получаем модель (кэшируется)
             model = get_whisper_model()
-            
-            # Выполняем транскрипцию
+            language = os.getenv("WHISPER_LANGUAGE", "ru") or None
             segments, info = model.transcribe(
                 prepared_path,
                 beam_size=5,
-                language="ru",  # Можно сделать настраиваемым через env
-                task="transcribe"
+                language=language,
+                task="transcribe",
             )
-            
-            # Собираем текст из сегментов
-            text_parts = []
-            for segment in segments:
-                text_parts.append(segment.text)
-            
-            result = " ".join(text_parts).strip()
-            
-            # Удаляем временный подготовленный файл, если он был создан
+            plain, timed = segments_to_transcript(segments, offset_sec)
             if is_prepared and os.path.exists(prepared_path):
                 os.remove(prepared_path)
-            
-            return result
-        except Exception as e:
-            # Удаляем временный файл даже при ошибке
+            return plain, timed
+        except Exception:
             if is_prepared and os.path.exists(prepared_path):
                 try:
                     os.remove(prepared_path)
-                except:
+                except OSError:
                     pass
-            raise e
+            raise
     except Exception as e:
         print(f"Error transcribing {audio_path} with Whisper: {str(e)}")
         raise
+
+
+def transcribe_with_openai_stt(audio_path: str, provider: str, offset_sec: float = 0.0) -> tuple[str, str]:
+    """
+    Транскрипция через OpenAI-совместимый Speech-to-Text API.
+    Groq: whisper-large-v3-turbo, около $0.04 за час аудио.
+    """
+    if provider == "groq":
+        api_key = os.getenv("GROQ_API_KEY", "").strip()
+        base_url = os.getenv("GROQ_STT_BASE_URL", "https://api.groq.com/openai/v1").strip()
+        model = os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo").strip()
+        if not api_key:
+            raise ValueError("Для Groq нужен GROQ_API_KEY. Получить ключ: https://console.groq.com/keys")
+    else:
+        api_key = (
+            os.getenv("STT_API_KEY", "").strip()
+            or os.getenv("OPENAI_API_KEY", "").strip()
+        )
+        base_url = os.getenv("STT_API_BASE_URL", "https://api.openai.com/v1").strip()
+        model = os.getenv("STT_API_MODEL", "whisper-1").strip()
+        if not api_key:
+            raise ValueError(
+                "Для внешнего транскрибатора нужен STT_API_KEY или OPENAI_API_KEY."
+            )
+
+    language = os.getenv("STT_LANGUAGE", os.getenv("WHISPER_LANGUAGE", "ru")).strip() or None
+    stt_client = OpenAI(api_key=api_key, base_url=base_url.rstrip("/"))
+
+    upload_path = audio_path
+    temp_mp3 = None
+    try:
+        audio = AudioSegment.from_file(audio_path)
+        temp_mp3 = os.path.join(UPLOAD_DIR, f"stt_{uuid.uuid4()}.mp3")
+        audio.export(temp_mp3, format="mp3", bitrate="64k")
+        upload_path = temp_mp3
+    except Exception as e:
+        print(f"Не удалось сжать аудио для STT API, отправляем исходный файл: {e}")
+
+    def _transcribe_file(response_format: str):
+        with open(upload_path, "rb") as audio_file:
+            kwargs = {
+                "model": model,
+                "file": audio_file,
+                "response_format": response_format,
+            }
+            if language:
+                kwargs["language"] = language
+            return stt_client.audio.transcriptions.create(**kwargs)
+
+    try:
+        try:
+            result = _transcribe_file("verbose_json")
+        except Exception:
+            result = _transcribe_file("json")
+
+        if isinstance(result, str):
+            text = result.strip()
+            return text, text
+
+        text = (getattr(result, "text", None) or "").strip()
+        raw_segments = getattr(result, "segments", None)
+        if raw_segments is None and isinstance(result, dict):
+            text = (result.get("text") or text).strip()
+            raw_segments = result.get("segments")
+
+        if raw_segments:
+            plain, timed = segments_to_transcript(raw_segments, offset_sec)
+            return plain or text, timed or text
+        return text, text
+    except Exception as e:
+        print(f"Error transcribing {audio_path} with {provider} STT: {str(e)}")
+        raise
+    finally:
+        if temp_mp3 and os.path.exists(temp_mp3):
+            try:
+                os.remove(temp_mp3)
+            except OSError:
+                pass
 
 def transcribe_with_speechkit(audio_path: str) -> str:
     """
@@ -518,50 +780,202 @@ def _transcribe_speechkit_chunk(audio_segment: AudioSegment, api_key: str, folde
             except:
                 pass
 
+def _chat_completion(system_prompt: str, user_text: str, max_tokens: int = 4000) -> str:
+    deepseek_key = os.getenv("DEEPSEEK_KEY")
+    if not deepseek_key:
+        raise ValueError(
+            "DEEPSEEK_KEY не установлен. Установите его в переменных окружения для генерации резюме."
+        )
+    response = client.chat.completions.create(
+        model=os.getenv("DEEPSEEK_MODEL", DEEPSEEK_MODEL),
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ],
+        temperature=0.4,
+        max_tokens=max_tokens,
+        extra_body={"thinking": {"type": "disabled"}},
+    )
+    message = response.choices[0].message
+    text = (getattr(message, "content", None) or "").strip()
+    if not text:
+        text = (getattr(message, "reasoning_content", None) or "").strip()
+    if not text:
+        raise RuntimeError("DeepSeek вернул пустой ответ. Проверьте DEEPSEEK_MODEL и ключ.")
+    return text
+
+
+def _split_text_chunks(text: str, max_chars: int) -> list[str]:
+    chunks = []
+    start = 0
+    length = len(text)
+    while start < length:
+        end = min(start + max_chars, length)
+        if end < length:
+            split_at = text.rfind("\n", start, end)
+            if split_at <= start:
+                split_at = text.rfind(" ", start, end)
+            if split_at > start:
+                end = split_at
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        start = end
+    return chunks
+
+
 def generate_summary(text: str, prompt: str) -> str:
     """
-    Генерирует резюме, отправляя полный текст в DeepSeek API с указанным системным промптом.
+    Генерирует резюме через DeepSeek. Длинные транскрипты режет на части,
+    затем собирает одно резюме — иначе модель теряет решения и задачи.
     """
     try:
-        deepseek_key = os.getenv("DEEPSEEK_KEY")
-        if not deepseek_key:
-            raise ValueError(
-                "DEEPSEEK_KEY не установлен. Установите его в переменных окружения для генерации резюме."
+        if len(text) <= SUMMARY_CHUNK_CHARS:
+            return _chat_completion(prompt, text)
+
+        chunks = _split_text_chunks(text, SUMMARY_CHUNK_CHARS)
+        partials = []
+        for index, chunk in enumerate(chunks, 1):
+            partials.append(
+                _chat_completion(
+                    prompt,
+                    f"Это фрагмент {index}/{len(chunks)} одной записи. Извлеки из него материал "
+                    f"строго по правилам системного промпта. Если в фрагменте нечего извлекать — напиши «пусто».\n\n{chunk}",
+                    max_tokens=2500,
+                )
             )
-        
-        messages = [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": text}
-        ]
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=messages,
-            temperature=0.4,
-            max_tokens=2000
+        merged = "\n\n".join(
+            f"## Фрагмент {index}\n{part}" for index, part in enumerate(partials, 1)
         )
-        # Обращаемся к результату через словарный синтаксис
-        return response.choices[0].message.content
-    except ValueError as e:
-        # Пробрасываем ValueError дальше, чтобы пользователь видел понятную ошибку
+        return _chat_completion(
+            prompt,
+            "Ниже извлечения из фрагментов одной записи. Собери из них ОДИН документ "
+            "строго в формате системного промпта. Без повторов, без выдуманных фактов, "
+            "действия и задачи разных участников не сливай:\n\n"
+            + merged,
+        )
+    except ValueError:
         raise
     except Exception as e:
         error_msg = f"Ошибка генерации резюме через DeepSeek API: {str(e)}"
         print(error_msg)
         raise RuntimeError(error_msg)
 
-def create_docx(summary: str, file_id: str):
-    """
-    Создает .docx файл с итоговым резюме.
-    """
-    from datetime import datetime
+
+def _table_cells(line: str) -> list[str]:
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _is_table_separator(line: str) -> bool:
+    cells = _table_cells(line)
+    if not cells:
+        return False
+    return all(cell.replace(":", "").replace("-", "") == "" and "-" in cell for cell in cells)
+
+
+def _add_markdown_table(doc: Document, rows: list[list[str]]) -> None:
+    if not rows:
+        return
+    table = doc.add_table(rows=len(rows), cols=len(rows[0]))
+    table.style = "Table Grid"
+    for r_index, row in enumerate(rows):
+        for c_index, value in enumerate(row):
+            if c_index >= len(table.rows[r_index].cells):
+                continue
+            cell = table.rows[r_index].cells[c_index]
+            cell.text = value
+            if r_index == 0:
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        run.bold = True
+    doc.add_paragraph()
+
+
+def _add_summary_blocks(doc: Document, summary: str) -> None:
+    lines = [raw.rstrip() for raw in summary.splitlines()]
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        if not line:
+            index += 1
+            continue
+        if line.startswith("|"):
+            table_lines = []
+            while index < len(lines) and lines[index].strip().startswith("|"):
+                current = lines[index].strip()
+                if not _is_table_separator(current):
+                    table_lines.append(_table_cells(current))
+                index += 1
+            width = max((len(row) for row in table_lines), default=0)
+            normalized = [row + [""] * (width - len(row)) for row in table_lines]
+            _add_markdown_table(doc, normalized)
+            continue
+        if line.startswith("### "):
+            doc.add_heading(line[4:].strip(), level=3)
+        elif line.startswith("## "):
+            doc.add_heading(line[3:].strip(), level=2)
+        elif line.startswith("# "):
+            doc.add_heading(line[2:].strip(), level=2)
+        elif line.startswith(("- ", "* ")):
+            doc.add_paragraph(line[2:].strip(), style="List Bullet")
+        else:
+            doc.add_paragraph(line)
+        index += 1
+
+
+def _move_result_file(filename: str, user_dir: str) -> None:
+    dest = os.path.join(user_dir, filename)
+    abs_result_path = os.path.join(BASE_DIR, filename)
+    if os.path.exists(abs_result_path):
+        shutil.move(abs_result_path, dest)
+    elif os.path.exists(filename):
+        shutil.move(filename, dest)
+
+
+def _new_document(title: str, original_name: str) -> Document:
+    from pathlib import Path
+
     doc = Document()
-    doc.add_heading("Резюме встречи", level=1)
-    doc.add_paragraph(summary)
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    output_filename = f"Резюме_встречи_{timestamp}.docx"
-    output_path = os.path.join(BASE_DIR, output_filename)
-    doc.save(output_path)
-    return output_filename
+    doc.add_heading(title, level=1)
+    source = Path(original_name).name
+    if source:
+        meta = doc.add_paragraph()
+        meta.add_run("Источник: ").bold = True
+        meta.add_run(source)
+    return doc
+
+
+def create_result_documents(
+    summary: str,
+    transcript: str,
+    original_name: str,
+    file_id: str,
+) -> tuple[str, str]:
+    """Два отдельных .docx: резюме и транскрипт с таймкодами."""
+    from datetime import datetime
+
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    suffix = file_id[:8]
+    summary_name = f"Резюме_встречи_{stamp}_{suffix}.docx"
+    transcript_name = f"Транскрипт_встречи_{stamp}_{suffix}.docx"
+
+    summary_doc = _new_document("Резюме встречи", original_name)
+    _add_summary_blocks(summary_doc, summary)
+    summary_doc.save(os.path.join(BASE_DIR, summary_name))
+
+    transcript_doc = _new_document("Транскрипт встречи", original_name)
+    for line in (transcript or "").splitlines():
+        cleaned = line.strip()
+        if cleaned:
+            transcript_doc.add_paragraph(cleaned)
+    transcript_doc.save(os.path.join(BASE_DIR, transcript_name))
+
+    return summary_name, transcript_name
 
 # Эндпоинт для скачивания итогового файла
 @app.get("/download/{user_id}/{filename}")
@@ -584,7 +998,12 @@ async def get_history(request: Request):
     user_dir = os.path.join(RESULT_DIR, user_id)
     if not os.path.exists(user_dir):
         return JSONResponse({"history": [], "user_id": user_id})
-    files = os.listdir(user_dir)
+    files = []
+    for name in sorted(os.listdir(user_dir), reverse=True):
+        files.append({
+            "name": name,
+            "url": f"/download/{user_id}/{quote(name)}",
+        })
     return JSONResponse({"history": files, "user_id": user_id})
 
 # При необходимости можно смонтировать статические файлы (например, для CSS или JS)
