@@ -4,8 +4,21 @@
     {
       "name": "transcribation",
       "runtimeExecutable": ".venv/Scripts/python.exe",
-      "runtimeArgs": ["main.py"],
+      "runtimeArgs": [
+        "main.py"
+      ],
       "port": 8000
+    },
+    {
+      "name": "idea-chat",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "idea-chat",
+        "run",
+        "dev"
+      ],
+      "port": 3000
     }
   ]
 }

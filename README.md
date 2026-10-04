@@ -86,16 +86,20 @@ brew install ffmpeg
 cp .env.example .env
 ```
 
-Заполните обязательные переменные (как минимум `DEEPSEEK_KEY`).
+Заполните `LLM_API_KEY` (агрегатор VedAI) или, если агрегатора нет, `DEEPSEEK_KEY`.
 
 ## Конфигурация (.env)
 
 ### Обязательные
 
-- `DEEPSEEK_KEY` — API-ключ DeepSeek для генерации резюме
-- `DEEPSEEK_MODEL` — модель резюме (по умолчанию `deepseek-flash`; имя `deepseek-chat` больше не работает)
-- `DEEPSEEK_PROCESS_MODEL` — модель для шаблона «Описание процесса» (по умолчанию `deepseek-v4-pro`)
-- `DEEPSEEK_PROCESS_THINKING` — режим рассуждения для этого шаблона: `true`/`false` (по умолчанию `true`)
+- `LLM_API_KEY` — ключ агрегатора (VedAI). Если задан, резюме идёт через него
+- `LLM_BASE_URL` — OpenAI-совместимый адрес, по умолчанию `https://vedai.by/api/v1`
+- `LLM_MODEL` — модель для обычных шаблонов (для VedAI: `deepseek-v4-flash`)
+- `LLM_PROCESS_MODEL` — модель для «Описание процесса» (для VedAI: `deepseek-v4-pro`)
+- `DEEPSEEK_KEY` — запасной прямой ключ DeepSeek, если `LLM_API_KEY` пустой
+- `DEEPSEEK_MODEL` — модель резюме при прямом DeepSeek (по умолчанию `deepseek-flash`)
+- `DEEPSEEK_PROCESS_MODEL` — модель процесса при прямом DeepSeek (по умолчанию `deepseek-v4-pro`)
+- `DEEPSEEK_PROCESS_THINKING` — режим рассуждения для шаблона процесса: `true`/`false`
 
 ### Whisper (локальная транскрибация)
 

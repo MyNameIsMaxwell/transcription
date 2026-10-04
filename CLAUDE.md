@@ -20,9 +20,9 @@
 ## Карта main.py
 - `PROMPT_PRESETS` / `resolve_summary_prompt` — шаблоны промптов (`default`, `tasks`, `brief`, `process`).
   Свой промпт из textarea перекрывает шаблон.
-- `resolve_summary_model` — модель и режим рассуждения по шаблону: `process` → `DEEPSEEK_PROCESS_MODEL`
-  (`deepseek-v4-pro`, thinking on), остальные → `DEEPSEEK_MODEL` (`deepseek-flash`, thinking off).
-  Пробрасывается upload → `process_audio` → `generate_summary` → `_chat_completion`.
+- `resolve_summary_model` — модель по шаблону: `process` → `LLM_PROCESS_MODEL` / `DEEPSEEK_PROCESS_MODEL`
+  (`deepseek-v4-pro`), остальные → `LLM_MODEL` / `DEEPSEEK_MODEL` (`deepseek-v4-flash` на агрегаторе).
+  Если задан `LLM_API_KEY`, запросы идут на `LLM_BASE_URL` (VedAI `https://vedai.by/api/v1`).
 - `PROMPT_SHARED_RULES` — общие правила для «встречных» шаблонов (про задачи и таблицу задач).
 - `TranscriptionEngine` — движки: `whisper` (faster-whisper, CPU), `speechkit`, `groq`, `stt_api` (OpenAI-совместимый).
 - `process_audio` — фоновый пайплайн (ThreadPoolExecutor, 2 воркера):
@@ -62,6 +62,10 @@
   Обёртки чанков в `generate_summary` переформулированы нейтрально («запись», «участники»).
 - 2026-10-04 — модель по шаблону: `process` идёт на `deepseek-v4-pro` с рассуждением (+32k токенов бюджета),
   остальные — на `deepseek-flash`. Цены DeepSeek: пик (09:00–13:00 МСК, будни) вдвое дороже.
-- 2026-10-04 — `process` больше не режется на чанки по 40k: транскрипт целиком (контекст моделей 1M),
-  при > 500k символов — последовательное уточнение черновика. Причина: нарезка рвала шаги на стыках,
-  ломала нумерацию и ссылки развилок. Остальные шаблоны — без изменений.
+- 2026-10-04 — резюме через OpenAI-совместимый агрегатор VedAI: `LLM_BASE_URL` + `LLM_API_KEY`.
+  Модели на агрегаторе: `deepseek-v4-flash` (обычные шаблоны), `deepseek-v4-pro` (процесс).
+  Прямой DeepSeek остаётся запасным, если `LLM_API_KEY` пустой.
+- 2026-10-04 — в `idea-chat/` добавлен отдельный подпроект (Next.js + assistant-ui, свой `package.json`,
+  `.env.local`, `README.md`): чат «Банк идей» для СТиМ — сбор идеи по шаблону через Yandex Alice AI,
+  голосовые через SpeechKit, сохранение в `idea-chat/data/` и на почту. С `main.py` не связан;
+  возможно, позже переедет в отдельный репозиторий.

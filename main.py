@@ -21,8 +21,34 @@ from urllib.parse import quote
 
 load_dotenv()
 
+
+def get_llm_api_key() -> str:
+    return os.getenv("LLM_API_KEY", "").strip() or os.getenv("DEEPSEEK_KEY", "").strip()
+
+
+def get_llm_base_url() -> str:
+    custom = os.getenv("LLM_BASE_URL", "").strip()
+    if custom:
+        return custom.rstrip("/")
+    if os.getenv("LLM_API_KEY", "").strip():
+        return "https://vedai.by/api/v1"
+    return "https://api.deepseek.com"
+
+
+def get_llm_client() -> OpenAI:
+    key = get_llm_api_key()
+    if not key:
+        raise ValueError(
+            "Нет ключа для резюме: укажите LLM_API_KEY (агрегатор) или DEEPSEEK_KEY."
+        )
+    return OpenAI(api_key=key, base_url=get_llm_base_url())
+
+
+def llm_supports_thinking() -> bool:
+    return "deepseek.com" in get_llm_base_url()
+
+
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-flash")
-client = OpenAI(api_key=os.getenv("DEEPSEEK_KEY"), base_url="https://api.deepseek.com")
 
 app = FastAPI()
 app.add_middleware(
@@ -220,14 +246,24 @@ def resolve_summary_prompt(preset: str | None, custom_prompt: str | None) -> str
 
 
 def resolve_summary_model(preset: str | None) -> tuple[str, bool, bool]:
-    """Модель DeepSeek, режим рассуждения и отправка транскрипта целиком — для шаблона.
-    Описание процесса требует восстановить порядок шагов и развилки — для него модель посильнее."""
+    """Модель, режим рассуждения и отправка транскрипта целиком — для шаблона."""
     key = (preset or "default").strip().lower()
+    aggregator = bool(os.getenv("LLM_API_KEY", "").strip())
+    default_flash = "deepseek-v4-flash" if aggregator else "deepseek-flash"
     if key == "process":
-        model = os.getenv("DEEPSEEK_PROCESS_MODEL", "").strip() or "deepseek-v4-pro"
+        model = (
+            os.getenv("LLM_PROCESS_MODEL", "").strip()
+            or os.getenv("DEEPSEEK_PROCESS_MODEL", "").strip()
+            or "deepseek-v4-pro"
+        )
         thinking = os.getenv("DEEPSEEK_PROCESS_THINKING", "true").strip().lower() == "true"
         return model, thinking, True
-    return os.getenv("DEEPSEEK_MODEL", "").strip() or DEEPSEEK_MODEL, False, False
+    model = (
+        os.getenv("LLM_MODEL", "").strip()
+        or os.getenv("DEEPSEEK_MODEL", "").strip()
+        or default_flash
+    )
+    return model, False, False
 
 
 def format_timestamp(seconds: float) -> str:
@@ -812,33 +848,35 @@ def _chat_completion(
     model: str = DEEPSEEK_MODEL,
     thinking: bool = False,
 ) -> str:
-    deepseek_key = os.getenv("DEEPSEEK_KEY")
-    if not deepseek_key:
-        raise ValueError(
-            "DEEPSEEK_KEY не установлен. Установите его в переменных окружения для генерации резюме."
-        )
+    get_llm_api_key()
     params = {}
+    extra_body = None
     if thinking:
-        # В режиме рассуждения max_tokens покрывает и рассуждение, и ответ; temperature не поддерживается
         max_tokens += THINKING_TOKEN_BUDGET
     else:
         params["temperature"] = 0.4
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
+    if llm_supports_thinking():
+        extra_body = {"thinking": {"type": "enabled" if thinking else "disabled"}}
+    request = {
+        "model": model,
+        "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
         ],
-        max_tokens=max_tokens,
-        extra_body={"thinking": {"type": "enabled" if thinking else "disabled"}},
+        "max_tokens": max_tokens,
         **params,
-    )
+    }
+    if extra_body is not None:
+        request["extra_body"] = extra_body
+    response = get_llm_client().chat.completions.create(**request)
     message = response.choices[0].message
     text = (getattr(message, "content", None) or "").strip()
     if not text and not thinking:
         text = (getattr(message, "reasoning_content", None) or "").strip()
     if not text:
-        raise RuntimeError(f"DeepSeek вернул пустой ответ (модель {model}). Проверьте имя модели и ключ.")
+        raise RuntimeError(
+            f"Модель {model} вернула пустой ответ. Проверьте LLM_API_KEY / DEEPSEEK_KEY и имя модели."
+        )
     return text
 
 
