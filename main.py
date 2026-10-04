@@ -82,6 +82,10 @@ class TranscriptionEngine(str, Enum):
 
 AUDIO_SPLIT_MS = 10 * 60 * 1000
 SUMMARY_CHUNK_CHARS = 40000
+# Описание процесса отправляем целиком: нарезка рвёт порядок шагов и развилки.
+# Если транскрипт всё же длиннее (это 8–10 часов речи) — последовательное уточнение черновика.
+WHOLE_TEXT_MAX_CHARS = 500_000
+REFINE_OVERLAP_CHARS = 2500
 
 PROMPT_SHARED_RULES = """
 Транскрипция может содержать ошибки распознавания, обрывки и повторы. Исправляй только очевидные оговорки. Не выдумывай факты, решения, имена, цифры, суммы и сроки.
@@ -215,6 +219,17 @@ def resolve_summary_prompt(preset: str | None, custom_prompt: str | None) -> str
     return PROMPT_PRESETS.get(key, DEFAULT_SUMMARY_PROMPT)
 
 
+def resolve_summary_model(preset: str | None) -> tuple[str, bool, bool]:
+    """Модель DeepSeek, режим рассуждения и отправка транскрипта целиком — для шаблона.
+    Описание процесса требует восстановить порядок шагов и развилки — для него модель посильнее."""
+    key = (preset or "default").strip().lower()
+    if key == "process":
+        model = os.getenv("DEEPSEEK_PROCESS_MODEL", "").strip() or "deepseek-v4-pro"
+        thinking = os.getenv("DEEPSEEK_PROCESS_THINKING", "true").strip().lower() == "true"
+        return model, thinking, True
+    return os.getenv("DEEPSEEK_MODEL", "").strip() or DEEPSEEK_MODEL, False, False
+
+
 def format_timestamp(seconds: float) -> str:
     total = int(max(0, seconds))
     hours, remainder = divmod(total, 3600)
@@ -346,6 +361,7 @@ async def upload_audio(
         f_out.write(content)
 
     prompt = resolve_summary_prompt(preset, prompt)
+    model, thinking, whole_text = resolve_summary_model(preset)
 
     # Инициализируем статус задачи
     update_task_status(
@@ -370,6 +386,9 @@ async def upload_audio(
         prompt,
         engine_enum,
         original_name,
+        model,
+        thinking,
+        whole_text,
     )
 
     return JSONResponse({
@@ -391,6 +410,9 @@ def process_audio(
     prompt: str,
     engine: TranscriptionEngine,
     original_name: str = "audio",
+    model: str = DEEPSEEK_MODEL,
+    thinking: bool = False,
+    whole_text: bool = False,
 ):
     try:
         # Обновляем статус: начата обработка
@@ -443,8 +465,8 @@ def process_audio(
             raise ValueError("Транскрипция пуста. Возможно, аудио не содержит речи или произошла ошибка распознавания.")
 
         # 3. Генерация резюме через DeepSeek API
-        update_task_status(file_id, progress=85, message="Генерация резюме...")
-        summary = generate_summary(full_text, prompt)
+        update_task_status(file_id, progress=85, message=f"Генерация резюме ({model})...")
+        summary = generate_summary(full_text, prompt, model, thinking, whole_text)
 
         # 4. Два отдельных Word-файла: резюме и транскрипт
         update_task_status(file_id, progress=90, message="Создание документов...")
@@ -780,28 +802,43 @@ def _transcribe_speechkit_chunk(audio_segment: AudioSegment, api_key: str, folde
             except:
                 pass
 
-def _chat_completion(system_prompt: str, user_text: str, max_tokens: int = 4000) -> str:
+THINKING_TOKEN_BUDGET = 32000
+
+
+def _chat_completion(
+    system_prompt: str,
+    user_text: str,
+    max_tokens: int = 4000,
+    model: str = DEEPSEEK_MODEL,
+    thinking: bool = False,
+) -> str:
     deepseek_key = os.getenv("DEEPSEEK_KEY")
     if not deepseek_key:
         raise ValueError(
             "DEEPSEEK_KEY не установлен. Установите его в переменных окружения для генерации резюме."
         )
+    params = {}
+    if thinking:
+        # В режиме рассуждения max_tokens покрывает и рассуждение, и ответ; temperature не поддерживается
+        max_tokens += THINKING_TOKEN_BUDGET
+    else:
+        params["temperature"] = 0.4
     response = client.chat.completions.create(
-        model=os.getenv("DEEPSEEK_MODEL", DEEPSEEK_MODEL),
+        model=model,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
         ],
-        temperature=0.4,
         max_tokens=max_tokens,
-        extra_body={"thinking": {"type": "disabled"}},
+        extra_body={"thinking": {"type": "enabled" if thinking else "disabled"}},
+        **params,
     )
     message = response.choices[0].message
     text = (getattr(message, "content", None) or "").strip()
-    if not text:
+    if not text and not thinking:
         text = (getattr(message, "reasoning_content", None) or "").strip()
     if not text:
-        raise RuntimeError("DeepSeek вернул пустой ответ. Проверьте DEEPSEEK_MODEL и ключ.")
+        raise RuntimeError(f"DeepSeek вернул пустой ответ (модель {model}). Проверьте имя модели и ключ.")
     return text
 
 
@@ -824,14 +861,56 @@ def _split_text_chunks(text: str, max_chars: int) -> list[str]:
     return chunks
 
 
-def generate_summary(text: str, prompt: str) -> str:
+def _refine_summary(text: str, prompt: str, llm: dict) -> str:
+    """Черновик по первой части, затем каждая следующая часть дополняет его.
+    К части добавляем хвост предыдущей, чтобы не терять шаги на стыке."""
+    chunks = _split_text_chunks(text, WHOLE_TEXT_MAX_CHARS)
+    total = len(chunks)
+    draft = ""
+    prev_tail = ""
+    for index, chunk in enumerate(chunks, 1):
+        if index == 1:
+            user_text = (
+                f"Это часть 1/{total} одной записи. Составь по ней черновик документа "
+                f"строго в формате системного промпта.\n\n{chunk}"
+            )
+        else:
+            user_text = (
+                f"Ниже черновик документа по частям 1–{index - 1} одной записи, конец предыдущей части "
+                f"(для связки) и часть {index}/{total}. Дополни и исправь черновик с учётом новой части: "
+                "вставляй шаги на правильное место, сохраняй сквозную нумерацию и ссылки развилок, "
+                "ничего из черновика не теряй без причины, не выдумывай. Верни полный обновлённый документ "
+                "строго в формате системного промпта.\n\n"
+                f"=== Черновик ===\n{draft}\n\n"
+                f"=== Конец предыдущей части ===\n{prev_tail}\n\n"
+                f"=== Часть {index}/{total} ===\n{chunk}"
+            )
+        draft = _chat_completion(prompt, user_text, max_tokens=8000, **llm)
+        prev_tail = chunk[-REFINE_OVERLAP_CHARS:]
+    return draft
+
+
+def generate_summary(
+    text: str,
+    prompt: str,
+    model: str = DEEPSEEK_MODEL,
+    thinking: bool = False,
+    whole_text: bool = False,
+) -> str:
     """
     Генерирует резюме через DeepSeek. Длинные транскрипты режет на части,
     затем собирает одно резюме — иначе модель теряет решения и задачи.
+    whole_text: отправить транскрипт целиком (до WHOLE_TEXT_MAX_CHARS), а сверх этого —
+    последовательно уточнять один черновик, а не собирать его из независимых выжимок.
     """
+    llm = {"model": model, "thinking": thinking}
     try:
+        if whole_text:
+            if len(text) <= WHOLE_TEXT_MAX_CHARS:
+                return _chat_completion(prompt, text, max_tokens=8000, **llm)
+            return _refine_summary(text, prompt, llm)
         if len(text) <= SUMMARY_CHUNK_CHARS:
-            return _chat_completion(prompt, text)
+            return _chat_completion(prompt, text, **llm)
 
         chunks = _split_text_chunks(text, SUMMARY_CHUNK_CHARS)
         partials = []
@@ -842,6 +921,7 @@ def generate_summary(text: str, prompt: str) -> str:
                     f"Это фрагмент {index}/{len(chunks)} одной записи. Извлеки из него материал "
                     f"строго по правилам системного промпта. Если в фрагменте нечего извлекать — напиши «пусто».\n\n{chunk}",
                     max_tokens=2500,
+                    **llm,
                 )
             )
         merged = "\n\n".join(
@@ -853,6 +933,7 @@ def generate_summary(text: str, prompt: str) -> str:
             "строго в формате системного промпта. Без повторов, без выдуманных фактов, "
             "действия и задачи разных участников не сливай:\n\n"
             + merged,
+            **llm,
         )
     except ValueError:
         raise

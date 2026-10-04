@@ -94,6 +94,8 @@ cp .env.example .env
 
 - `DEEPSEEK_KEY` — API-ключ DeepSeek для генерации резюме
 - `DEEPSEEK_MODEL` — модель резюме (по умолчанию `deepseek-flash`; имя `deepseek-chat` больше не работает)
+- `DEEPSEEK_PROCESS_MODEL` — модель для шаблона «Описание процесса» (по умолчанию `deepseek-v4-pro`)
+- `DEEPSEEK_PROCESS_THINKING` — режим рассуждения для этого шаблона: `true`/`false` (по умолчанию `true`)
 
 ### Whisper (локальная транскрибация)
 
