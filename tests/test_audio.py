@@ -34,6 +34,7 @@ def audio_functions():
     namespace = {"os": os, "io": io, "subprocess": subprocess,
                  "AudioSegment": AudioSegment, "FFMPEG_PATH": FFMPEG,
                  "AUDIO_SPLIT_MS": 600_000, "TranscriptionEngine": object,
+                 "time": types.SimpleNamespace(sleep=Mock()),
                  "DEEPSEEK_MODEL": "test"}
     exec(compile(module, str(ROOT / "main.py"), "exec"), namespace)
     return namespace
@@ -149,6 +150,79 @@ class AudioTests(unittest.TestCase):
         self.assertTrue(original.exists())
         self.assertTrue(all(not p.exists() for p in parts))
         self.assertEqual(status.call_args.kwargs["status"], "error")
+
+
+class SpeechKitRetryTests(unittest.TestCase):
+    def setUp(self):
+        self.functions = audio_functions()
+        self.audio = AudioSegment.silent(duration=25000, frame_rate=16000)
+
+    @staticmethod
+    def response(status=200, text="готово"):
+        return Mock(status_code=status, text="stream timeout; request-id: test-id",
+                    json=lambda: {"result": text})
+
+    def transcribe(self, outcomes, audio=None):
+        self.post = Mock(side_effect=outcomes)
+        requests = types.SimpleNamespace(
+            post=self.post,
+            exceptions=types.SimpleNamespace(Timeout=TimeoutError, ConnectionError=ConnectionError),
+        )
+        with patch.dict(sys.modules, {"requests": requests}):
+            return self.functions["_transcribe_speechkit_chunk"](
+                self.audio if audio is None else audio, "key", "folder", "ru-RU")
+
+    def test_504_then_success_retries_same_payload(self):
+        self.assertEqual(self.transcribe([self.response(504), self.response()]), "готово")
+        self.assertEqual(self.post.call_count, 2)
+        self.assertEqual(self.post.call_args_list[0].kwargs["data"],
+                         self.post.call_args_list[1].kwargs["data"])
+        self.functions["time"].sleep.assert_called_once_with(2)
+
+    def test_repeated_timeout_splits_without_losing_or_duplicating_samples(self):
+        # Нечётное количество кадров проверяет точность границы разбиения.
+        audio = AudioSegment(data=b"\x01\x00\x02\x00" * 200000 + b"\x03\x00",
+                             sample_width=2, channels=1, frame_rate=16000)
+        self.assertEqual(self.transcribe([self.response(504)] * 3 +
+                                        [self.response(text="левая"), self.response(text="правая")],
+                                        audio=audio), "левая правая")
+        payloads = [call.kwargs["data"] for call in self.post.call_args_list]
+        self.assertEqual(len(payloads), 5)
+        self.assertEqual(payloads[3] + payloads[4], audio.raw_data)
+        self.assertEqual(self.functions["time"].sleep.call_count, 2)
+
+    def test_client_timeout_and_connection_error_retried(self):
+        for error in [TimeoutError("read timed out"), ConnectionError("connection reset")]:
+            with self.subTest(error=type(error).__name__):
+                self.assertEqual(self.transcribe([error, self.response()]), "готово")
+                self.assertEqual(self.post.call_count, 2)
+
+    def test_transient_http_errors_retried(self):
+        for status in [408, 429, 500, 502, 503]:
+            with self.subTest(status=status):
+                self.assertEqual(self.transcribe([self.response(status), self.response()]), "готово")
+                self.assertEqual(self.post.call_count, 2)
+
+    def test_permanent_errors_not_retried(self):
+        for status in [400, 401, 403]:
+            with self.subTest(status=status):
+                with self.assertRaisesRegex(RuntimeError, str(status)):
+                    self.transcribe([self.response(status)])
+                self.assertEqual(self.post.call_count, 1)
+
+    def test_retry_limit_preserves_request_id(self):
+        with self.assertRaisesRegex(RuntimeError, "request-id: test-id"):
+            self.transcribe([self.response(503)] * 3)
+        self.assertEqual(self.post.call_count, 3)
+
+    def test_short_audio_timeout_stops_without_more_splitting(self):
+        with self.assertRaisesRegex(RuntimeError, "после 3 попыток"):
+            self.transcribe([self.response(504)] * 3, audio=self.audio[:5000])
+        self.assertEqual(self.post.call_count, 3)
+
+    def test_all_silent_results_are_valid(self):
+        self.assertEqual(self.transcribe([self.response(text="")]), "")
+        self.assertEqual(self.post.call_count, 1)
 
 
 if __name__ == "__main__":

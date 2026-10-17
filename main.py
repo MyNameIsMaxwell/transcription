@@ -5,6 +5,7 @@ import asyncio
 import subprocess
 import json
 import io
+import time
 
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional
@@ -856,23 +857,49 @@ def _transcribe_speechkit_chunk(audio_segment: AudioSegment, api_key: str, folde
     if not audio_data or len(audio_data) > 1_000_000 or len(audio) > 30_000:
         raise ValueError("Фрагмент SpeechKit должен содержать до 30 секунд и до 1 МБ аудио.")
 
-    response = requests.post(
-        "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize",
-        headers={"Authorization": f"Api-Key {api_key}",
-                 "Content-Type": "application/octet-stream"},
-        params={"folderId": folder_id, "format": "lpcm", "lang": lang,
-                "sampleRateHertz": "16000", "topic": "general"},
-        data=audio_data,
-        timeout=(10, 120),
-    )
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"SpeechKit API вернул ошибку {response.status_code}: {response.text}"
-        )
-    result = response.json()
-    if isinstance(result.get("result"), str):
-        return result["result"].strip()
-    raise RuntimeError(f"SpeechKit: неожиданный формат ответа: {result}")
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        timed_out = False
+        try:
+            response = requests.post(
+                "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize",
+                headers={"Authorization": f"Api-Key {api_key}",
+                         "Content-Type": "application/octet-stream"},
+                params={"folderId": folder_id, "format": "lpcm", "lang": lang,
+                        "sampleRateHertz": "16000", "topic": "general"},
+                data=audio_data,
+                timeout=(10, 120),
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            timed_out = isinstance(e, requests.exceptions.Timeout)
+            error = f"SpeechKit: ошибка соединения: {e}"
+        else:
+            if response.status_code == 200:
+                result = response.json()
+                if isinstance(result.get("result"), str):
+                    return result["result"].strip()
+                raise RuntimeError(f"SpeechKit: неожиданный формат ответа: {result}")
+            error = f"SpeechKit API вернул ошибку {response.status_code}: {response.text}"
+            if response.status_code not in {408, 429, 500, 502, 503, 504}:
+                raise RuntimeError(error)
+            timed_out = response.status_code in {408, 504}
+
+        if attempt + 1 < max_attempts:
+            delay = 2 ** (attempt + 1)
+            print(f"SpeechKit: повтор {attempt + 2}/{max_attempts} через {delay} с. {error}")
+            time.sleep(delay)
+
+    # Если повтор запроса не помог, пробуем меньшие фрагменты. Граница
+    # по кадрам сохраняет каждый семпл ровно один раз, без потери и дублирования.
+    if timed_out and len(audio) > 5000:
+        midpoint = int(audio.frame_count()) // 2
+        print(f"SpeechKit: таймаут после {max_attempts} попыток, делим {len(audio)} мс пополам.")
+        left = audio.get_sample_slice(0, midpoint)
+        right = audio.get_sample_slice(midpoint)
+        texts = [_transcribe_speechkit_chunk(part, api_key, folder_id, lang)
+                 for part in (left, right)]
+        return " ".join(text for text in texts if text)
+    raise RuntimeError(f"{error}\nНе удалось распознать фрагмент после {max_attempts} попыток.")
 
 
 THINKING_TOKEN_BUDGET = 32000
