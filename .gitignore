@@ -25,6 +25,8 @@ pyvenv.cfg
 # FFmpeg source/binaries (install separately)
 ffmpeg/
 
+*.m4a
+
 # Application runtime data
 uploads/
 results/

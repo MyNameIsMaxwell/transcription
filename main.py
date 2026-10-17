@@ -2,25 +2,60 @@ import os
 import uuid
 import shutil
 import asyncio
+import subprocess
+import json
+
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional
 from enum import Enum
+from urllib.parse import quote
+
+from dotenv import load_dotenv
+
+
+# ---------------------------------------------------------
+# Сначала определяем BASE_DIR и загружаем .env
+# ---------------------------------------------------------
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+load_dotenv(os.path.join(BASE_DIR, ".env"))
+
+
+# ---------------------------------------------------------
+# Настраиваем FFmpeg ДО импорта pydub
+# ---------------------------------------------------------
+
+FFMPEG_PATH = os.getenv("FFMPEG_PATH", "").strip()
+
+if FFMPEG_PATH:
+    ffmpeg_bin = os.path.dirname(FFMPEG_PATH)
+
+    os.environ["PATH"] = (
+        ffmpeg_bin
+        + os.pathsep
+        + os.environ.get("PATH", "")
+    )
+
+
+# ---------------------------------------------------------
+# Только теперь остальные библиотеки
+# ---------------------------------------------------------
+
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Form
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
+
 from pydub import AudioSegment
 from openai import OpenAI
-
-from dotenv import load_dotenv
 from docx import Document
 from faster_whisper import WhisperModel
-import subprocess
-import json
-from urllib.parse import quote
 
-load_dotenv()
 
+# Явно задаём ffmpeg для pydub
+if FFMPEG_PATH:
+    AudioSegment.converter = FFMPEG_PATH
 
 def get_llm_api_key() -> str:
     return os.getenv("LLM_API_KEY", "").strip() or os.getenv("DEEPSEEK_KEY", "").strip()
@@ -57,7 +92,6 @@ app.add_middleware(
 )
 
 # Определяем директории для хранения загруженных файлов и результатов
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 RESULT_DIR = os.path.join(BASE_DIR, "results")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
