@@ -23,8 +23,9 @@
                         <div class="file-input-icon">&#9835;</div>
                         <div class="file-input-text">Перетащите файл сюда или нажмите для выбора</div>
                         <div class="file-input-name" id="fileName"></div>
-                        <input type="file" id="audioFile" name="file" accept="audio/*,video/*,.m4a,.mp3,.wav,.ogg,.aac,.mp4,.mov,.webm,.caf">
+                        <input type="file" id="audioFile" name="file">
                     </div>
+                    <p class="form-label-hint">Аудио и видео: M4A, MP3, WAV, OGG, FLAC, AAC, MP4, MOV и другие форматы, поддерживаемые FFmpeg.</p>
                     <div class="file-source-row">
                         <button type="button" class="btn-secondary is-hidden" id="driveBtn">Открыть Google Диск</button>
                     </div>
@@ -439,8 +440,7 @@
                 const appId = appConfig.google_app_id || (appConfig.google_client_id || '').split('-')[0];
                 const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
                     .setIncludeFolders(true)
-                    .setSelectFolderEnabled(false)
-                    .setMimeTypes('audio/mpeg,audio/mp4,audio/wav,audio/x-wav,audio/webm,audio/ogg,audio/aac,audio/x-m4a,audio/mp3,video/mp4,video/quicktime,video/webm,application/octet-stream');
+                    .setSelectFolderEnabled(false);
                 const picker = new google.picker.PickerBuilder()
                     .addView(view)
                     .setOAuthToken(driveAccessToken)

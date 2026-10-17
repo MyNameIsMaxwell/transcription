@@ -4,6 +4,7 @@ import shutil
 import asyncio
 import subprocess
 import json
+import io
 
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional
@@ -26,7 +27,9 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 # Настраиваем FFmpeg ДО импорта pydub
 # ---------------------------------------------------------
 
-FFMPEG_PATH = os.getenv("FFMPEG_PATH", "").strip()
+FFMPEG_PATH = os.path.expandvars(os.path.expanduser(
+    os.getenv("FFMPEG_PATH", "").strip().strip('"')
+))
 
 if FFMPEG_PATH:
     ffmpeg_bin = os.path.dirname(FFMPEG_PATH)
@@ -345,7 +348,7 @@ def get_whisper_model() -> WhisperModel:
 
 def check_ffmpeg():
     """Проверяет наличие ffmpeg в системе"""
-    ffmpeg_path = os.getenv("FFMPEG_PATH", "ffmpeg")
+    ffmpeg_path = FFMPEG_PATH or "ffmpeg"
     try:
         result = subprocess.run(
             [ffmpeg_path, "-version"],
@@ -354,12 +357,8 @@ def check_ffmpeg():
         )
         if result.returncode == 0:
             return True
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired):
         pass
-    
-    # Пробуем найти в стандартных местах
-    if os.path.exists(ffmpeg_path):
-        return True
     
     raise RuntimeError(
         f"FFmpeg не найден. Установите FFmpeg и добавьте его в PATH, "
@@ -484,6 +483,7 @@ def process_audio(
     thinking: bool = False,
     whole_text: bool = False,
 ):
+    parts = []
     try:
         # Обновляем статус: начата обработка
         update_task_status(
@@ -569,6 +569,44 @@ def process_audio(
             message=f"Ошибка обработки: {error_msg}",
             error=error_msg,
         )
+    finally:
+        # В том числе при ошибке распознавания одной из частей.
+        for part in parts:
+            if part != file_path and os.path.exists(part):
+                try:
+                    os.remove(part)
+                except OSError:
+                    pass
+
+def load_audio(audio_path: str) -> AudioSegment:
+    """Определяет контейнер по содержимому и декодирует первый аудиопоток.
+
+    FFmpeg работает напрямую: отдельный ffprobe не требуется. Для всех
+    движков результат одинаковый: PCM signed 16-bit, mono, 16000 Hz.
+    """
+    try:
+        result = subprocess.run(
+            [FFMPEG_PATH or "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+             "-i", audio_path, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
+             "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"],
+            capture_output=True,
+            timeout=600,
+        )
+    except OSError as e:
+        raise RuntimeError("Не удалось запустить FFmpeg. Проверьте PATH или FFMPEG_PATH.") from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("Превышено время преобразования аудио (10 минут).") from e
+    if result.returncode:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()[-2000:]
+        raise ValueError(
+            "Не удалось прочитать запись: файл повреждён, не содержит аудиодорожки "
+            f"или его формат не поддерживается установленным FFmpeg. {detail}"
+        )
+    audio = AudioSegment.from_file(io.BytesIO(result.stdout), format="wav")
+    if not audio.raw_data:
+        raise ValueError("Запись не содержит аудиоданных.")
+    return audio
+
 
 def prepare_audio_for_transcription(audio_path: str) -> str:
     """
@@ -576,7 +614,7 @@ def prepare_audio_for_transcription(audio_path: str) -> str:
     Возвращает путь к подготовленному файлу.
     """
     try:
-        audio = AudioSegment.from_file(audio_path)
+        audio = load_audio(audio_path)
         # Конвертируем в моно и 16kHz для оптимизации
         audio = audio.set_channels(1)
         audio = audio.set_frame_rate(16000)
@@ -584,20 +622,19 @@ def prepare_audio_for_transcription(audio_path: str) -> str:
         # Сохраняем во временный WAV файл
         base, _ = os.path.splitext(audio_path)
         prepared_path = f"{base}_prepared.wav"
-        audio.export(prepared_path, format="wav")
+        with audio.export(prepared_path, format="wav"):
+            pass
         return prepared_path
     except Exception as e:
         print(f"Ошибка подготовки аудио {audio_path}: {e}")
-        # Если не удалось подготовить, возвращаем исходный файл
-        return audio_path
+        raise
 
 def split_audio(file_path: str):
     """
-    Разбивает аудиофайл на части, если его длительность превышает 10 минут.
-    Возвращает список путей к файлам (если длительность меньше – возвращает исходный файл).
+    Преобразует запись в PCM WAV mono 16 kHz и делит на части до 10 минут.
     """
     try:
-        audio = AudioSegment.from_file(file_path)
+        audio = load_audio(file_path)
     except Exception as e:
         raise RuntimeError(
             f"Не удалось загрузить аудиофайл {file_path}. "
@@ -606,9 +643,6 @@ def split_audio(file_path: str):
     
     duration_ms = len(audio)
     max_duration = AUDIO_SPLIT_MS
-
-    if duration_ms <= max_duration:
-        return [file_path]
 
     parts = []
     num_parts = (duration_ms // max_duration) + (1 if duration_ms % max_duration else 0)
@@ -620,8 +654,9 @@ def split_audio(file_path: str):
             chunk = audio[start_ms:end_ms]
             # Временные части всегда в WAV — надёжнее, чем повторный экспорт в m4a/mp3
             part_filename = f"{base}_part{i+1}.wav"
-            chunk.export(part_filename, format="wav")
             parts.append(part_filename)
+            with chunk.export(part_filename, format="wav"):
+                pass
         except Exception as e:
             # Очищаем уже созданные части при ошибке
             for part in parts:
@@ -711,12 +746,15 @@ def transcribe_with_openai_stt(audio_path: str, provider: str, offset_sec: float
     upload_path = audio_path
     temp_mp3 = None
     try:
-        audio = AudioSegment.from_file(audio_path)
+        audio = load_audio(audio_path)
         temp_mp3 = os.path.join(UPLOAD_DIR, f"stt_{uuid.uuid4()}.mp3")
-        audio.export(temp_mp3, format="mp3", bitrate="64k")
+        with audio.export(temp_mp3, format="mp3", bitrate="64k"):
+            pass
         upload_path = temp_mp3
-    except Exception as e:
-        print(f"Не удалось сжать аудио для STT API, отправляем исходный файл: {e}")
+    except Exception:
+        if temp_mp3 and os.path.exists(temp_mp3):
+            os.remove(temp_mp3)
+        raise
 
     def _transcribe_file(response_format: str):
         with open(upload_path, "rb") as audio_file:
@@ -776,7 +814,7 @@ def transcribe_with_speechkit(audio_path: str) -> str:
             )
         
         # Загружаем аудио
-        audio = AudioSegment.from_file(audio_path)
+        audio = load_audio(audio_path)
         duration_ms = len(audio)
         
         # SpeechKit REST API имеет ограничения, поэтому разбиваем на фрагменты по 25 секунд
@@ -811,66 +849,31 @@ def _transcribe_speechkit_chunk(audio_segment: AudioSegment, api_key: str, folde
     """
     import requests
     
-    # Конвертируем в OGG Opus (формат, поддерживаемый SpeechKit)
-    # Создаем временный файл
-    temp_file = os.path.join(UPLOAD_DIR, f"temp_{uuid.uuid4()}.ogg")
-    try:
-        # Экспортируем в OGG Opus
-        audio_segment.export(temp_file, format="ogg", codec="libopus", parameters=["-ar", "16000"])
-        
-        # Читаем файл как бинарные данные
-        with open(temp_file, "rb") as f:
-            audio_data = f.read()
-        
-        # Формируем запрос к SpeechKit
-        url = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
-        headers = {
-            "Authorization": f"Api-Key {api_key}"
-        }
-        
-        # Параметры в query string
-        params = {
-            "folderId": folder_id,
-            "format": "oggopus",
-            "lang": lang,
-            "sampleRateHertz": "16000",
-            "topic": "general"  # Можно настроить через env
-        }
-        
-        # Отправляем запрос: бинарные данные в теле, параметры в query
-        response = requests.post(
-            url,
-            headers=headers,
-            params=params,
-            data=audio_data
+    # REST v1 принимает LPCM без WAV-заголовка: signed 16-bit LE, mono.
+    audio = (audio_segment.set_channels(1).set_frame_rate(16000)
+             .set_sample_width(2))
+    audio_data = audio.raw_data
+    if not audio_data or len(audio_data) > 1_000_000 or len(audio) > 30_000:
+        raise ValueError("Фрагмент SpeechKit должен содержать до 30 секунд и до 1 МБ аудио.")
+
+    response = requests.post(
+        "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize",
+        headers={"Authorization": f"Api-Key {api_key}",
+                 "Content-Type": "application/octet-stream"},
+        params={"folderId": folder_id, "format": "lpcm", "lang": lang,
+                "sampleRateHertz": "16000", "topic": "general"},
+        data=audio_data,
+        timeout=(10, 120),
+    )
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"SpeechKit API вернул ошибку {response.status_code}: {response.text}"
         )
-        
-        if response.status_code != 200:
-            error_text = response.text
-            raise RuntimeError(f"SpeechKit API вернул ошибку {response.status_code}: {error_text}")
-        
-        result = response.json()
+    result = response.json()
+    if isinstance(result.get("result"), str):
+        return result["result"].strip()
+    raise RuntimeError(f"SpeechKit: неожиданный формат ответа: {result}")
 
-        # SpeechKit REST v1: {"result": "распознанный текст"}
-        if isinstance(result.get("result"), str):
-            return result["result"].strip()
-
-        # Формат v2/v3 с alternatives (на случай смены API)
-        nested = result.get("result")
-        if isinstance(nested, dict):
-            alternatives = nested.get("alternatives", [])
-            if alternatives:
-                return alternatives[0].get("text", "").strip()
-
-        print(f"SpeechKit: неожиданный формат ответа: {result}")
-        return ""
-    finally:
-        # Удаляем временный файл
-        if os.path.exists(temp_file):
-            try:
-                os.remove(temp_file)
-            except:
-                pass
 
 THINKING_TOKEN_BUDGET = 32000
 
